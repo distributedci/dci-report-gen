@@ -1,15 +1,17 @@
 import os
-import re
-from datetime import date, timedelta
+from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from dci_report_gen.config import (
+    MissingVariablesError,
     _resolve_date_expr,
     _resolve_vars,
     _substitute_vars_expr,
     load_config,
 )
-
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -177,3 +179,155 @@ class TestResolveVars:
         vars = {"date_start": "2024-06-01", "name": "test"}
         result = _resolve_vars(vars)
         assert result == {"date_start": "2024-06-01", "name": "test"}
+
+
+# ── Pre-flight validation tests ────────────────────────────────────
+
+
+class TestPreflightValidation:
+    def _write_config(self, tmp_path: Path, content: str) -> str:
+        cfg = tmp_path / "report.yaml"
+        cfg.write_text(content)
+        return str(cfg)
+
+    def test_missing_config_var_raises_clean_error(self, tmp_path):
+        """A single undefined {{var}} in a data query raises MissingVariablesError."""
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+sections:
+  - name: "Jobs"
+    source:
+      type: dci
+      query: "created_at>='{{date_start}}'"
+    render:
+      style: table
+      columns:
+        - header: ID
+          field: id
+""",
+        )
+        with pytest.raises(MissingVariablesError) as exc_info:
+            load_config(cfg)
+        assert "date_start" in exc_info.value.missing
+
+    def test_multiple_missing_vars_reported_at_once(self, tmp_path):
+        """Multiple undefined vars are all reported in a single raise."""
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+sections:
+  - name: "Jobs"
+    source:
+      type: dci
+      query: "created_at>='{{date_start}}' and site='{{site}}'"
+    render:
+      style: table
+      columns:
+        - header: ID
+          field: id
+""",
+        )
+        with pytest.raises(MissingVariablesError) as exc_info:
+            load_config(cfg)
+        assert "date_start" in exc_info.value.missing
+        assert "site" in exc_info.value.missing
+
+    def test_all_vars_supplied_no_error(self, tmp_path):
+        """When all {{var}} references are covered by the vars block, no error is raised."""
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+vars:
+  date_start: "2024-06-01"
+sections:
+  - name: "Jobs"
+    source:
+      type: dci
+      query: "created_at>='{{date_start}}'"
+    render:
+      style: table
+      columns:
+        - header: ID
+          field: id
+""",
+        )
+        # Should not raise
+        config = load_config(cfg)
+        assert config.title == "Test"
+
+    def test_missing_jinja2_template_var(self, tmp_path):
+        """A Jinja2 template variable not in context/vars/data raises MissingVariablesError."""
+        # Create a minimal Jinja2 template that references an undefined variable
+        template_file = tmp_path / "report.md.j2"
+        template_file.write_text("# {{ title }}\n{{ missing_var }}\n")
+
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+  layout: "report.md.j2"
+data:
+  jobs:
+    type: dci
+    query: "status='success'"
+""",
+        )
+        with pytest.raises(MissingVariablesError) as exc_info:
+            load_config(cfg)
+        assert "missing_var" in exc_info.value.missing
+
+    def test_jinja2_loop_vars_not_flagged(self, tmp_path):
+        """Loop variables in Jinja2 templates are not reported as missing."""
+        # Create a template with a for-loop — 'j' is a loop var, not a missing var
+        template_file = tmp_path / "report.md.j2"
+        template_file.write_text(
+            "# {{ title }}\n{% for j in jobs %}{{ j.id }}{% endfor %}\n"
+        )
+
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+  layout: "report.md.j2"
+data:
+  jobs:
+    type: dci
+    query: "status='success'"
+""",
+        )
+        # 'jobs' is in data, 'j' is a loop var — should not raise
+        config = load_config(cfg)
+        assert config.title == "Test"
+
+    def test_missing_var_error_contains_hint(self, tmp_path):
+        """The error message includes a --var KEY=VALUE hint for each missing variable."""
+        cfg = self._write_config(
+            tmp_path,
+            """
+report:
+  title: "Test"
+sections:
+  - name: "Jobs"
+    source:
+      type: dci
+      query: "created_at>='{{my_date}}'"
+    render:
+      style: table
+      columns:
+        - header: ID
+          field: id
+""",
+        )
+        with pytest.raises(MissingVariablesError) as exc_info:
+            load_config(cfg)
+        error_str = str(exc_info.value)
+        assert "--var my_date=VALUE" in error_str

@@ -1,8 +1,13 @@
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 
+import jinja2
+import jinja2.meta
 import yaml
+
+_BUILTIN_TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 @dataclass
@@ -62,6 +67,88 @@ class ReportConfig:
     layout: str | None = None
     data: dict[str, SourceConfig] | None = None
     context: dict = field(default_factory=dict)
+
+
+class MissingVariablesError(ValueError):
+    """Raised when the config references variables that are not defined."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        lines = "\n".join(f"  --var {name}=VALUE" for name in missing)
+        super().__init__(
+            f"The following variables are referenced but not defined:\n{lines}"
+        )
+
+
+def _collect_var_refs(obj) -> set[str]:
+    """Recursively walk str/dict/list YAML values and return all {{var}} variable names."""
+    pattern = re.compile(r"\{\{(\w+)(?:[*+\-]\d+)?\}\}")
+    found: set[str] = set()
+    if isinstance(obj, str):
+        found.update(pattern.findall(obj))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found.update(_collect_var_refs(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.update(_collect_var_refs(item))
+    return found
+
+
+def _find_template_file(layout: str, config_dir: Path) -> Path | None:
+    """Find a template file by trying config_dir first, then the built-in templates dir."""
+    candidate = config_dir / layout
+    if candidate.exists():
+        return candidate
+    candidate = _BUILTIN_TEMPLATES_DIR / layout
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _collect_jinja2_undeclared(template_path: Path) -> set[str]:
+    """Return the set of undeclared variables in a Jinja2 template file."""
+    env = jinja2.Environment()
+    source = template_path.read_text()
+    ast = env.parse(source)
+    return jinja2.meta.find_undeclared_variables(ast)
+
+
+def _preflight_validate(
+    raw: dict,
+    resolved_vars: dict[str, str],
+    layout: str | None,
+    config_path: str,
+    all_data_names: set[str],
+) -> None:
+    """Validate that all referenced variables are defined.
+
+    Raises MissingVariablesError if any variable references cannot be resolved.
+    """
+    # (a) Scan the config body (excluding the 'vars' block) for {{var}} references
+    body = {k: v for k, v in raw.items() if k != "vars"}
+    refs_in_body = _collect_var_refs(body)
+    missing_in_body = refs_in_body - set(resolved_vars)
+
+    # (b) If layout is set, check the Jinja2 template for undeclared variables
+    missing_in_template: set[str] = set()
+    if layout:
+        config_dir = Path(config_path).parent
+        template_path = _find_template_file(layout, config_dir)
+        if template_path is not None:
+            undeclared = _collect_jinja2_undeclared(template_path)
+            available = (
+                {"title", "author", "date"}
+                | set(resolved_vars)
+                | set(raw.get("context", {}).keys())
+                | all_data_names
+            )
+            missing_in_template = undeclared - available
+
+    # (c) Union both missing sets and raise if non-empty
+    missing = missing_in_body | missing_in_template
+    if missing:
+        raise MissingVariablesError(sorted(missing))
 
 
 def _resolve_date_expr(text: str) -> str:
@@ -269,6 +356,10 @@ def load_config(
                 name: _parse_source(src_raw)
                 for name, src_raw in tmpl_raw["data"].items()
             }
+
+    # Pre-flight validation: check all variable references can be resolved
+    all_data_names = set(template_data) | set(raw.get("data", {}))
+    _preflight_validate(raw, vars, layout, path, all_data_names)
 
     sections = []
     if "sections" in raw:

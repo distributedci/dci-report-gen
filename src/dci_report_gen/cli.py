@@ -3,7 +3,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from dci_report_gen.config import load_config
+from dci_report_gen.config import MissingVariablesError, load_config
 from dci_report_gen.engine import ReportEngine
 
 
@@ -56,7 +56,11 @@ def main():
                 parser.error(f"Invalid --var format: {item} (expected KEY=VALUE)")
             var_overrides[key] = value
 
-    config = load_config(args.config, var_overrides)
+    try:
+        config = load_config(args.config, var_overrides)
+    except MissingVariablesError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     output = args.output
     if not output:
