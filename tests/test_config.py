@@ -1,5 +1,5 @@
+import datetime
 import os
-from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -92,33 +92,36 @@ def test_include_files_config():
 # ── Date expression tests ──────────────────────────────────────────
 
 
+def _mock_today(mock_dt, fixed_date: datetime.date) -> None:
+    """Configure mock_dt (patched datetime module) to return fixed_date for now().date()."""
+    mock_dt.datetime.now.return_value.date.return_value = fixed_date
+    mock_dt.timedelta = datetime.timedelta
+    mock_dt.timezone = datetime.timezone
+
+
 class TestResolveDateExpr:
-    @patch("dci_report_gen.config.date")
-    def test_today(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_today(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         assert _resolve_date_expr("{today}") == "2026-09-09"
 
-    @patch("dci_report_gen.config.date")
-    def test_today_minus_days(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_today_minus_days(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         assert _resolve_date_expr("{today-7d}") == "2026-09-02"
 
-    @patch("dci_report_gen.config.date")
-    def test_today_plus_days(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_today_plus_days(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         assert _resolve_date_expr("{today+3d}") == "2026-09-12"
 
     def test_no_expression(self):
         assert _resolve_date_expr("plain text") == "plain text"
         assert _resolve_date_expr("2026-01-01") == "2026-01-01"
 
-    @patch("dci_report_gen.config.date")
-    def test_embedded_in_text(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_embedded_in_text(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         assert _resolve_date_expr("from {today-7d} to {today}") == "from 2026-09-02 to 2026-09-09"
 
 
@@ -145,10 +148,9 @@ class TestSubstituteVarsExpr:
 
 
 class TestResolveVars:
-    @patch("dci_report_gen.config.date")
-    def test_full_pipeline(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_full_pipeline(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         vars = {
             "days": "7",
             "date_end": "{today}",
@@ -161,10 +163,9 @@ class TestResolveVars:
         assert result["date_start"] == "2026-09-02"
         assert result["prev_start"] == "2026-08-26"
 
-    @patch("dci_report_gen.config.date")
-    def test_override_days(self, mock_date):
-        mock_date.today.return_value = date(2026, 9, 9)
-        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+    @patch("dci_report_gen.config.datetime")
+    def test_override_days(self, mock_dt):
+        _mock_today(mock_dt, datetime.date(2026, 9, 9))
         vars = {
             "days": "5",
             "date_end": "{today}",

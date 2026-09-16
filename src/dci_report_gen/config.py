@@ -1,6 +1,6 @@
+import datetime
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from pathlib import Path
 
 import jinja2
@@ -157,12 +157,15 @@ def _resolve_date_expr(text: str) -> str:
     def replacer(match: re.Match) -> str:
         expr = match.group(1)
         if expr == "today":
-            return date.today().isoformat()
+            return datetime.datetime.now(tz=datetime.timezone.utc).date().isoformat()
         m = re.match(r"today([+-])(\d+)d", expr)
         if m:
             sign = 1 if m.group(1) == "+" else -1
             days = int(m.group(2))
-            return (date.today() + timedelta(days=sign * days)).isoformat()
+            return (
+                datetime.datetime.now(tz=datetime.timezone.utc).date()
+                + datetime.timedelta(days=sign * days)
+            ).isoformat()
         raise ValueError(f"Unknown date expression: {{{expr}}}")
 
     return re.sub(r"\{(today(?:[+-]\d+d)?)\}", replacer, text)
@@ -314,7 +317,7 @@ def load_config(
     author = report.get("author")
     report_date = report.get("date", "auto")
     if report_date == "auto":
-        report_date = date.today().isoformat()
+        report_date = datetime.datetime.now(tz=datetime.timezone.utc).date().isoformat()
 
     vars = raw.get("vars", {})
     if var_overrides:
