@@ -1,14 +1,19 @@
 import argparse
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from dci_report_gen.config import load_config
 from dci_report_gen.engine import ReportEngine
 
+# Project root is 3 levels up from this file: src/dci_report_gen/cli.py
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def main():
-    load_dotenv()
+    # Load .env from the project root so creds are found regardless of CWD.
+    load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
     parser = argparse.ArgumentParser(
         prog="dci-report-gen",
