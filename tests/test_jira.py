@@ -10,12 +10,11 @@ import requests
 
 from dci_report_gen.config import SourceConfig
 from dci_report_gen.fetchers.jira import (
-    JiraFetcher,
-    _TimeoutHTTPAdapter,
     _REQUEST_TIMEOUT,
     _RETRY_STATUS,
+    JiraFetcher,
+    _TimeoutHTTPAdapter,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,12 +22,12 @@ from dci_report_gen.fetchers.jira import (
 
 
 def _make_source(**kwargs) -> SourceConfig:
-    defaults = dict(
-        type="jira",
-        jql="project = TEST ORDER BY updated DESC",
-        max_results=10,
-        fields=["key", "summary", "status", "assignee"],
-    )
+    defaults = {
+        "type": "jira",
+        "jql": "project = TEST ORDER BY updated DESC",
+        "max_results": 10,
+        "fields": ["key", "summary", "status", "assignee"],
+    }
     defaults.update(kwargs)
     return SourceConfig(**defaults)
 
@@ -128,8 +127,8 @@ def test_retry_adapter_configured():
 
 def test_adapter_retries_on_429_then_succeeds():
     """A real session with the adapter should retry once after a 429 response."""
-    from urllib3.util.retry import Retry
     from urllib3.response import HTTPResponse as Urllib3Response
+    from urllib3.util.retry import Retry
 
     retry = Retry(
         total=2,
@@ -175,9 +174,8 @@ def test_retry_exhausted_surfaces_clear_error():
         mock_client._session = MagicMock()
         mock_client.search_issues.side_effect = requests.exceptions.RetryError("exhausted")
 
-        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}):
-            with pytest.raises(RuntimeError, match="after retries"):
-                fetcher.fetch(source)
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}), pytest.raises(RuntimeError, match="after retries"):
+            fetcher.fetch(source)
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +194,8 @@ def test_timeout_surfaces_clear_error():
         mock_client._session = MagicMock()
         mock_client.search_issues.side_effect = requests.exceptions.Timeout("too slow")
 
-        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}):
-            with pytest.raises(RuntimeError, match="timed out"):
-                fetcher.fetch(source)
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}), pytest.raises(RuntimeError, match="timed out"):
+            fetcher.fetch(source)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +213,5 @@ def test_missing_token_raises():
         if k not in ("JIRA_TOKEN", "JIRA_API_TOKEN")
     }
 
-    with patch.dict(os.environ, env_without_token, clear=True):
-        with pytest.raises(RuntimeError, match="JIRA_TOKEN"):
-            fetcher._get_client()
+    with patch.dict(os.environ, env_without_token, clear=True), pytest.raises(RuntimeError, match="JIRA_TOKEN"):
+        fetcher._get_client()
