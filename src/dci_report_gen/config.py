@@ -161,6 +161,11 @@ def _apply_vars_to_source(source: SourceConfig, vars: dict[str, str]) -> None:
         source.query = _substitute_vars(source.query, vars)
     if source.jql:
         source.jql = _substitute_vars(source.jql, vars)
+    if source.params:
+        source.params = {
+            k: (_substitute_vars(v, vars) if isinstance(v, str) and "{{" in v else v)
+            for k, v in source.params.items()
+        }
 
 
 def _parse_columns(raw: list[dict]) -> list[ColumnConfig]:

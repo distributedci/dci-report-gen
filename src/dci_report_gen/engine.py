@@ -30,6 +30,12 @@ class ReportEngine:
                 from dci_report_gen.fetchers.pr_jira_audit import PrJiraAuditFetcher
 
                 self._fetchers[source_type] = PrJiraAuditFetcher()
+            elif source_type == "jira_backlog_trend":
+                from dci_report_gen.fetchers.jira_backlog_trend import (
+                    JiraBacklogTrendFetcher,
+                )
+
+                self._fetchers[source_type] = JiraBacklogTrendFetcher()
             else:
                 raise ValueError(f"Unknown source type: {source_type}")
         return self._fetchers[source_type]
