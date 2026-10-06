@@ -160,6 +160,19 @@ Each entry in the `data` block defines a named data source.
 
 For each PR, the fetcher searches Jira for tickets referencing the PR URL (in description, comments, or web links) using exact-phrase JQL matching. Returns a list of dicts with `number`, `title`, `url`, `repo`, `author`, `created_at`, `linked` (bool), and `jira_keys` (list).
 
+**Jira Backlog Trend** (`type: jira_backlog_trend`) — reconstructs the open-backlog count at a series of past dates for trend charting:
+
+| Field                 | Description                                               | Default  |
+|-----------------------|-----------------------------------------------------------|----------|
+| `params.base_jql`     | Base JQL scope, e.g. `project = CILAB`                    | required |
+| `params.start_date`   | First sample date, `YYYY-MM-DD`                           | required |
+| `params.end_date`     | Last sample date, `YYYY-MM-DD`                            | today    |
+| `params.granularity`  | Sampling step: `daily`, `weekly`, or `monthly`           | `weekly` |
+
+For each sampled date `D`, a ticket counts as **open** when it was created on or before `D` and not yet resolved by `D` (`created <= D AND (resolutiondate is EMPTY OR resolutiondate > D)`). It additionally counts as **active** when it is assigned (`assignee is not EMPTY`) — a count-based approximation using the *current* assignee state. The **ratio** is `active / open`, i.e. the share of the open backlog being worked on. Alongside these point-in-time **stock** counts, each row also carries the per-period **flow** counts over the interval since the previous sample: **created** (`created > prev AND created <= D`) and **closed** (`resolutiondate > prev AND resolutiondate <= D`); both are `0` for the first sample. The stock-flow identity holds: `open[i] - open[i-1] == created[i] - closed[i]`. Counts use Jira's lightweight `approximate-count` endpoint (no issue payloads), so the fetcher is cheap even over long ranges. Returns a list of dicts `{"date": "YYYY-MM-DD", "open": <int>, "active": <int>, "ratio": <float>, "created": <int>, "closed": <int>}` sorted ascending by date. Pair it with the `trend_chart_svg` Jinja filter to render inline SVG line charts (see `examples/jira-backlog-trend.md.j2`), overlaying multiple series — e.g. open vs active for the stock, and created vs closed for the flow.
+
+Scope is purely driven by `base_jql`, so the same config serves any project, team label, or issue type. For a **bug-only** backlog & flow, override `base_jql` with `AND issuetype = Bug` (and set `scope=Bugs` for the header) — no separate config needed.
+
 ### Variables
 
 The `vars` block defines variables substituted into data source queries using `{{var_name}}` syntax. Variables can be overridden from the CLI with `--var KEY=VALUE`.
@@ -207,6 +220,7 @@ Templates are searched in this order:
 | `regex_extract`      | Extract first capture group from text                     | `{{ text \| regex_extract('Version: (.+)')}}` |
 | `yaml_path`          | Parse YAML text and extract a dotted key path             | `{{ text \| yaml_path('spec.version') }}`  |
 | `github_run_link`    | Find GitHub Actions run link from job tags                | `{{ job.tags \| github_run_link(repo) }}`  |
+| `trend_chart_svg`    | Rows `[{date, open}]` → inline SVG line chart (one or more series via `series=[...]`) | `{{ backlog \| trend_chart_svg(title="Backlog", series=[{"key":"open","label":"Open"},{"key":"active","label":"Active"}]) }}` |
 
 ## Examples
 
@@ -225,6 +239,29 @@ Finds all open PRs for a given GitHub user and checks which ones have a correspo
 
 ```bash
 dci-report-gen examples/pr-jira-audit.yaml -o audit.md --var github_username=fredericlepied
+```
+
+### Jira open-backlog trend
+
+Reconstructs the open-ticket count (stock) plus per-period created/closed (flow) at each sampled date and renders two trend charts. Defaults to CILAB, all issue types, weekly, from `2026-04-06` to today:
+
+```bash
+dci-report-gen examples/jira-backlog-trend.yaml -o backlog.md
+dci-report-gen examples/jira-backlog-trend.yaml -o backlog.pdf
+
+# Other project / range / granularity:
+dci-report-gen examples/jira-backlog-trend.yaml -o backlog.pdf \
+  --var project=CNF --var start_date=2026-01-01 --var granularity=monthly
+
+# Bug-only scope (same config, just narrow base_jql + set scope label):
+dci-report-gen examples/jira-backlog-trend.yaml -o cilab-bugs.pdf \
+  --var 'base_jql=project = CILAB AND issuetype = Bug' \
+  --var scope=Bugs --var 'title=CILAB Bug Backlog & Flow Trend'
+
+# Team-filtered bugs (e.g. E/// SLCM):
+dci-report-gen examples/jira-backlog-trend.yaml -o erc-bugs.pdf \
+  --var 'base_jql=project = CNF AND issuetype = Bug AND labels = Ericsson-Cloud-RAN-SLCM' \
+  --var scope=Bugs --var 'title=E/// SLCM Bug Backlog & Flow Trend'
 ```
 
 ### Using a predefined template
@@ -321,7 +358,8 @@ src/dci_report_gen/
 │   ├── dci.py          # DCI job search (dciclient)
 │   ├── jira.py         # Jira JQL queries
 │   ├── github.py       # GitHub issue/PR search
-│   └── pr_jira_audit.py # PR ↔ Jira cross-reference audit
+│   ├── pr_jira_audit.py # PR ↔ Jira cross-reference audit
+│   └── jira_backlog_trend.py # Point-in-time open-backlog trend
 ├── renderers/
 │   ├── jinja.py        # Jinja2 rendering + custom filters
 │   ├── markdown.py     # Markdown renderer (legacy sections mode)

@@ -1,0 +1,49 @@
+
+# {{ title }}
+
+**Date:** {{ date }}
+**Project:** {{ project }} &nbsp;|&nbsp; **Scope:** {{ scope }} &nbsp;|&nbsp; **Range:** {{ start_date }} → {{ end_date }} &nbsp;|&nbsp; **Granularity:** {{ granularity }}
+
+{% set values = backlog | map(attribute="open") | list %}
+{% set actives = backlog | map(attribute="active") | list %}
+{% set createds = backlog | map(attribute="created") | list %}
+{% set closeds = backlog | map(attribute="closed") | list %}
+{% set first = values[0] if values else 0 %}
+{% set last = values[-1] if values else 0 %}
+{% set peak = values | max if values else 0 %}
+{% set low = values | min if values else 0 %}
+{% set active_last = actives[-1] if actives else 0 %}
+{% set ratio_last = backlog[-1].ratio if backlog else 0 %}
+{% set total_created = createds | sum %}
+{% set total_closed = closeds | sum %}
+
+## Summary
+
+| Metric | Value |
+| ------ | ----- |
+| Sample points | {{ backlog | length }} |
+| Start ({{ backlog[0].date if backlog else "N/A" }}) | {{ first }} open |
+| Latest ({{ backlog[-1].date if backlog else "N/A" }}) | {{ last }} open / {{ active_last }} active |
+| Peak open | {{ peak }} 📈 |
+| Low open | {{ low }} |
+| Net change (open) | {{ last - first }} ({{ "%+.0f" | format((last - first) / first * 100) if first else 0 }}%) |
+| Active ratio (latest) | {{ "%.0f" | format(ratio_last * 100) }}% |
+| Total created (window) | {{ total_created }} |
+| Total closed (window) | {{ total_closed }} |
+| Net flow (created − closed) | {{ "%+d" | format(total_created - total_closed) }} |
+
+## Backlog (stock)
+
+{{ backlog | trend_chart_svg(title="Backlog — " + project, series=[{"key": "open", "label": "Open", "color": "#2a78d6"}, {"key": "active", "label": "Active (assigned)", "color": "#d6762a"}]) }}
+
+## Flow (created vs closed per period)
+
+{{ backlog | trend_chart_svg(title="Flow — " + project, series=[{"key": "created", "label": "Created", "color": "#e34948"}, {"key": "closed", "label": "Closed", "color": "#1baf7a"}]) }}
+
+## Data
+
+| Date | Open | Active | Ratio | Created | Closed | Net |
+| ---- | ---- | ------ | ----- | ------- | ------ | --- |
+{% for row in backlog %}
+| {{ row.date }} | {{ row.open }} | {{ row.active }} | {{ "%.0f" | format(row.ratio * 100) }}% | {{ row.created }} | {{ row.closed }} | {{ "%+d" | format(row.created - row.closed) }} |
+{% endfor %}

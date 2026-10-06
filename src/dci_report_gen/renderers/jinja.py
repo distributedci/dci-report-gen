@@ -35,6 +35,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["regex_extract"] = _filter_regex_extract
     env.filters["yaml_path"] = _filter_yaml_path
     env.filters["line_chart_svg"] = _filter_line_chart_svg
+    env.filters["trend_chart_svg"] = _filter_trend_chart_svg
     return env
 
 
@@ -329,6 +330,167 @@ def _filter_line_chart_svg(
             f'<text x="{lx + 22}" y="{ly + 10}" fill="{TEXT}" font-size="9.5">'
             f'{_html.escape(s["name"])}</text>'
         )
+
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+def _filter_trend_chart_svg(
+    rows: list[dict],
+    title: str = "Open backlog",
+    value_key: str = "open",
+    label_key: str = "date",
+    series: list[dict] | None = None,
+) -> str:
+    """Generate a responsive inline SVG trend chart with one or more lines.
+
+    Expects a list of rows like ``[{"date": "2026-04-06", "open": 304}, ...]``
+    (ascending by date). Y-axis auto-scales from 0 to a padded maximum.
+
+    By default a single line is drawn from ``value_key``. To overlay several
+    lines, pass ``series`` as a list of dicts, e.g.::
+
+        series=[
+            {"key": "open", "label": "Open", "color": "#2a78d6"},
+            {"key": "active", "label": "Active", "color": "#d6762a"},
+        ]
+
+    When ``series`` is given, ``value_key`` is ignored and a legend is drawn.
+    """
+    import html as _html
+
+    if not rows:
+        return ""
+
+    labels = [str(r.get(label_key, "")) for r in rows]
+
+    # Resolve the series to plot.
+    SERIES_COLORS = ["#2a78d6", "#d6762a", "#2ca05a", "#a02c8a"]
+    if series:
+        plot_series = []
+        for idx, s in enumerate(series):
+            key = s.get("key")
+            if not key:
+                continue
+            plot_series.append(
+                {
+                    "key": key,
+                    "label": s.get("label", key),
+                    "color": s.get("color", SERIES_COLORS[idx % len(SERIES_COLORS)]),
+                }
+            )
+    else:
+        plot_series = [{"key": value_key, "label": value_key, "color": "#2a78d6"}]
+
+    try:
+        series_values = [
+            [float(r.get(s["key"], 0) or 0) for r in rows] for s in plot_series
+        ]
+    except (ValueError, TypeError):
+        return ""
+    n = len(labels)
+    if n == 0 or not series_values:
+        return ""
+
+    vmax = max(max(vals) for vals in series_values)
+    # pad the top ~10% and round up to a "nice" number
+    top = vmax * 1.1 if vmax > 0 else 1.0
+    import math
+
+    magnitude = 10 ** max(0, len(str(int(top))) - 2)
+    top = math.ceil(top / magnitude) * magnitude if magnitude else math.ceil(top)
+    top = max(top, 1)
+
+    VW = 680
+    L, T, B = 52, 36, 250
+    R = VW - 14
+    pw, ph = R - L, B - T
+    VH = B + 60
+
+    SURFACE = "#fcfcfb"
+    GRID = "#e1e0d9"
+    AXIS_CLR = "#c3c2b7"
+    MUTED = "#898781"
+    TEXT = "#52514e"
+
+    def xp(i: int) -> int:
+        return L + round(i * pw / max(n - 1, 1))
+
+    def yp(v: float) -> int:
+        return B - round(v / top * ph)
+
+    out: list[str] = []
+    out.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {VW} {VH}" width="100%" '
+        f'style="display:block;font-family:system-ui,sans-serif;'
+        f'font-size:10px;background:{SURFACE}">'
+    )
+    out.append(
+        f'<text x="{(L + R) // 2}" y="22" text-anchor="middle" '
+        f'font-size="12" font-weight="600" fill="{TEXT}">'
+        f'{_html.escape(title)}</text>'
+    )
+
+    # Y grid + labels (5 steps)
+    for k in range(5):
+        v = top * k / 4
+        y = yp(v)
+        out.append(
+            f'<line x1="{L}" y1="{y}" x2="{R}" y2="{y}" '
+            f'stroke="{GRID}" stroke-width="1"/>'
+        )
+        out.append(
+            f'<text x="{L - 5}" y="{y + 4}" text-anchor="end" fill="{MUTED}" '
+            f'font-variant-numeric="tabular-nums">{int(v)}</text>'
+        )
+
+    # X labels (thin out to avoid overlap)
+    stride = max(1, n // 12)
+    for i, label in enumerate(labels):
+        x = xp(i)
+        if i % stride == 0 or i == n - 1:
+            out.append(
+                f'<text x="{x}" y="{B + 14}" text-anchor="end" fill="{MUTED}" '
+                f'transform="rotate(-35,{x},{B + 14})">{_html.escape(label)}</text>'
+            )
+
+    out.append(
+        f'<rect x="{L}" y="{T}" width="{pw}" height="{ph}" fill="none" '
+        f'stroke="{AXIS_CLR}" stroke-width="1"/>'
+    )
+
+    for s, values in zip(plot_series, series_values):
+        color = s["color"]
+        pts = [(xp(i), yp(v)) for i, v in enumerate(values)]
+        pts_str = " ".join(f"{x},{y}" for x, y in pts)
+        out.append(
+            f'<polyline points="{pts_str}" fill="none" stroke="{color}" '
+            f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+        for (x, y), v in zip(pts, values):
+            out.append(
+                f'<circle cx="{x}" cy="{y}" r="5" fill="{SURFACE}" '
+                f'stroke="{SURFACE}" stroke-width="2"/>'
+            )
+            out.append(f'<circle cx="{x}" cy="{y}" r="3.5" fill="{color}"/>')
+
+    # Legend (only when more than one series).
+    if len(plot_series) > 1:
+        lx = L
+        ly = VH - 16
+        for s in plot_series:
+            color = s["color"]
+            label = _html.escape(str(s["label"]))
+            out.append(
+                f'<line x1="{lx}" y1="{ly}" x2="{lx + 18}" y2="{ly}" '
+                f'stroke="{color}" stroke-width="2"/>'
+            )
+            out.append(f'<circle cx="{lx + 9}" cy="{ly}" r="3" fill="{color}"/>')
+            out.append(
+                f'<text x="{lx + 24}" y="{ly + 4}" fill="{TEXT}">{label}</text>'
+            )
+            lx += 24 + len(str(s["label"])) * 7 + 24
 
     out.append("</svg>")
     return "\n".join(out)
