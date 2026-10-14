@@ -1,0 +1,33 @@
+
+report:
+  title: "{{title}}"
+  date: auto
+  layout: jira-backlog-trend.md.j2
+
+vars:
+  # Backlog + flow trend. Works for any Jira project/filter.
+  # Override on the CLI, e.g.:
+  #   --var project=CILAB --var start_date=2026-04-06 --var granularity=weekly
+  #
+  # Bug-only scope: override base_jql and scope:
+  #   --var 'base_jql=project = CILAB AND issuetype = Bug' --var scope=Bugs
+  #
+  # Team-filtered (e.g. E/// SLCM bugs):
+  #   --var 'base_jql=project = CNF AND issuetype = Bug AND labels = Ericsson-Cloud-RAN-SLCM' \
+  #   --var scope=Bugs --var title="E/// SLCM Bug Backlog & Flow"
+  project: "CILAB"
+  base_jql: "project = {{project}}"
+  scope: "All issue types"
+  title: "{{project}} Backlog & Flow Trend"
+  start_date: "2026-04-06"
+  end_date: "{today}"
+  granularity: "weekly"
+
+data:
+  backlog:
+    type: jira_backlog_trend
+    params:
+      base_jql: "{{base_jql}}"
+      start_date: "{{start_date}}"
+      end_date: "{{end_date}}"
+      granularity: "{{granularity}}"
