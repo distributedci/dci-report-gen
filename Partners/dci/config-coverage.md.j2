@@ -1,0 +1,210 @@
+{# ═══════════════════════════════════════════════════════════════════ #}
+{# DCI Install Config Coverage & Heatmaps — MkDocs (Material) + Mermaid  #}
+{# Scope: daily OCP install jobs (dci-openshift-agent)                   #}
+{# ═══════════════════════════════════════════════════════════════════ #}
+
+{# ── Build an enriched row list from raw hits ──────────────────────── #}
+{%- set data = namespace(rows=[]) -%}
+{%- for j in jobs -%}
+  {%- set v = namespace(plat='n/a', topo='n/a', net='n/a', ip='n/a') -%}
+  {%- for t in j.tags or [] -%}
+    {%- if t.startswith('platform:') %}{% set v.plat = t[9:] %}
+    {%- elif t.startswith('topology:') %}{% set v.topo = t[9:] %}
+    {%- elif t.startswith('network_type:') %}{% set v.net = t[13:] %}
+    {%- elif t.startswith('ip_stack:') %}{% set v.ip = t[9:] %}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- set kv = namespace(nc='', nw='', nm='', ncp='') -%}
+  {%- for k in j.keys_values or [] -%}
+    {%- if k.key == 'node_count' %}{% set kv.nc = k.value|int %}
+    {%- elif k.key == 'nodes_worker' %}{% set kv.nw = k.value|int %}
+    {%- elif k.key == 'nodes_master' %}{% set kv.nm = k.value|int %}
+    {%- elif k.key == 'nodes_control-plane' %}{% set kv.ncp = k.value|int %}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- set has_tags = (v.plat != 'n/a') or (v.topo != 'n/a') or (v.net != 'n/a') or (v.ip != 'n/a') -%}
+  {%- set has_kv = (kv.nc != '') -%}
+  {%- set _ = data.rows.append({
+      'id': j.id, 'name': j.name, 'status': j.status,
+      'rci': j['remoteci.name'] or '—', 'topic': j['topic.name'] or '—',
+      'plat': v.plat, 'topo': v.topo, 'net': v.net, 'ip': v.ip,
+      'nc': kv.nc, 'nw': kv.nw, 'nm': kv.nm, 'ncp': kv.ncp,
+      'has_tags': has_tags, 'has_kv': has_kv,
+      'combo': v.plat ~ ' / ' ~ v.topo ~ ' / ' ~ v.net ~ ' / ' ~ v.ip
+    }) -%}
+{%- endfor -%}
+
+{%- set rows = data.rows -%}
+{%- set total = rows | length -%}
+
+{# ── Coverage helper (emoji by pct) ────────────────────────────────── #}
+{%- macro heat(pct) -%}
+{%- if pct >= 90 %}🟩{% elif pct >= 60 %}🟨{% elif pct > 0 %}🟧{% else %}🟥{% endif -%}
+{%- endmacro -%}
+
+{# ── Global coverage counts ────────────────────────────────────────── #}
+{%- set cov = namespace(tags=0, kv=0) -%}
+{%- for r in rows -%}
+  {%- if r.has_tags %}{% set cov.tags = cov.tags + 1 %}{% endif -%}
+  {%- if r.has_kv %}{% set cov.kv = cov.kv + 1 %}{% endif -%}
+{%- endfor -%}
+{%- set cov_tags_pct = ((cov.tags / total * 100) | round(1)) if total > 0 else 0 -%}
+{%- set cov_kv_pct = ((cov.kv / total * 100) | round(1)) if total > 0 else 0 -%}
+
+{# ── Status counts ─────────────────────────────────────────────────── #}
+{%- set st = namespace(success=0, failure=0, error=0, killed=0, running=0, other=0) -%}
+{%- for r in rows -%}
+  {%- if r.status == 'success' %}{% set st.success = st.success + 1 %}
+  {%- elif r.status == 'failure' %}{% set st.failure = st.failure + 1 %}
+  {%- elif r.status == 'error' %}{% set st.error = st.error + 1 %}
+  {%- elif r.status == 'killed' %}{% set st.killed = st.killed + 1 %}
+  {%- elif r.status == 'running' %}{% set st.running = st.running + 1 %}
+  {%- else %}{% set st.other = st.other + 1 %}{% endif -%}
+{%- endfor -%}
+
+# 🗺️ Install Config Coverage & Heatmaps — {{ date_start }} → {{ date_end }}
+
+!!! info "Reporting window & scope"
+    **Window:** {{ date_start }} → {{ date_end }} · **Generated:** {{ date }}
+    **Scope:** daily OCP **install** jobs (`dci-openshift-agent`, tags `agent:openshift` + `install` + `daily`)
+    **Jobs:** {{ total }}
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| 🧮 **Install jobs** | **{{ total }}** |
+| ✅ Success | {{ st.success }} |
+| ❌ Failure | {{ st.failure }} |
+| 🔥 Error | {{ st.error }} |
+| 🔄 Running | {{ st.running }} |
+{% if st.killed > 0 %}| ⏹️ Killed | {{ st.killed }} |
+{% endif %}| 🏷️ **New tags coverage** | **{{ cov.tags }}/{{ total }} ({{ cov_tags_pct }}%)** |
+| 🔑 **KV coverage** | **{{ cov.kv }}/{{ total }} ({{ cov_kv_pct }}%)** |
+
+!!! note "Why coverage is not 100%"
+    The new tags (`platform/topology/network_type/ip_stack`) and KV (`node_count`, …)
+    are injected from `cluster_info` **after a successful install**. Failed/errored jobs
+    and green-run (`kvr-green`) jobs on existing clusters legitimately have no coverage.
+
+---
+
+## 🅰️ Coverage Heatmap (per Remote CI)
+
+> Share of jobs that carry each new tag / KV, per remoteci. 🟩 ≥90% · 🟨 ≥60% · 🟧 >0% · 🟥 0%
+
+{% set rci_list = rows | map(attribute='rci') | unique | sort | list %}
+| Remote CI | Jobs | platform | topology | network_type | ip_stack | node_count (KV) |
+|-----------|------|----------|----------|--------------|----------|-----------------|
+{% for rci in rci_list -%}
+{%- set sub = rows | selectattr('rci', 'equalto', rci) | list -%}
+{%- set n = sub | length -%}
+{%- set cp = (sub | selectattr('plat', 'ne', 'n/a') | list | length) -%}
+{%- set ct = (sub | selectattr('topo', 'ne', 'n/a') | list | length) -%}
+{%- set cn = (sub | selectattr('net', 'ne', 'n/a') | list | length) -%}
+{%- set ci = (sub | selectattr('ip', 'ne', 'n/a') | list | length) -%}
+{%- set ck = (sub | selectattr('has_kv') | list | length) -%}
+{%- set pp = (cp / n * 100) | round(0) | int -%}
+{%- set pt = (ct / n * 100) | round(0) | int -%}
+{%- set pn = (cn / n * 100) | round(0) | int -%}
+{%- set pi = (ci / n * 100) | round(0) | int -%}
+{%- set pk = (ck / n * 100) | round(0) | int -%}
+| {{ rci }} | {{ n }} | {{ heat(pp) }} {{ pp }}% | {{ heat(pt) }} {{ pt }}% | {{ heat(pn) }} {{ pn }}% | {{ heat(pi) }} {{ pi }}% | {{ heat(pk) }} {{ pk }}% |
+{% endfor %}
+
+---
+
+{% set tagged = rows | selectattr('has_tags') | list -%}
+{%- set combos = tagged | map(attribute='combo') | unique | list -%}
+{%- set combo_rows = namespace(items=[]) -%}
+{%- for combo in combos -%}
+  {%- set sub = tagged | selectattr('combo', 'equalto', combo) | list -%}
+  {%- set cs = namespace(s=0, f=0, e=0) -%}
+  {%- for r in sub -%}
+    {%- if r.status == 'success' %}{% set cs.s = cs.s + 1 %}
+    {%- elif r.status == 'failure' %}{% set cs.f = cs.f + 1 %}
+    {%- elif r.status == 'error' %}{% set cs.e = cs.e + 1 %}{% endif -%}
+  {%- endfor -%}
+  {%- set _ = combo_rows.items.append({'combo': combo, 'n': sub|length, 's': cs.s, 'f': cs.f, 'e': cs.e}) -%}
+{%- endfor %}
+## 🅱️ Configuration Cartography
+
+> The distinct cluster configurations exercised by daily install jobs
+> (`platform / topology / network_type / ip_stack`), with volume and dominant status.
+> Only jobs that carry the tags are counted here.
+
+```mermaid
+---
+config:
+    xyChart:
+        width: 900
+        height: 420
+---
+xychart-beta
+    title "Jobs per configuration"
+    x-axis [{% for c in combo_rows.items | sort(attribute='n', reverse=true) %}"{{ c.combo | replace(' / ', '/') }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+    y-axis "Jobs"
+    bar [{% for c in combo_rows.items | sort(attribute='n', reverse=true) %}{{ c.n }}{% if not loop.last %}, {% endif %}{% endfor %}]
+```
+
+| platform / topology / network_type / ip_stack | Jobs | ✅ | ❌ | 🔥 |
+|-----------------------------------------------|------|----|----|----|
+{% for c in combo_rows.items | sort(attribute='n', reverse=true) -%}
+| `{{ c.combo }}` | **{{ c.n }}** | {{ c.s }} | {{ c.f }} | {{ c.e }} |
+{% endfor %}
+
+### Breakdown per dimension
+
+{% set dims = [('Platform', 'plat'), ('Topology', 'topo'), ('Network type', 'net'), ('IP stack', 'ip')] %}
+{% for label, attr in dims -%}
+**{{ label }}**
+
+{% set vals = tagged | map(attribute=attr) | unique | sort | list -%}
+| {{ label }} | Jobs | Share |
+|{{ '-' * (label|length + 2) }}|------|-------|
+{% for val in vals -%}
+{%- set n = tagged | selectattr(attr, 'equalto', val) | list | length -%}
+{%- set pct = (n / (tagged|length) * 100) | round(0) | int if (tagged|length) > 0 else 0 -%}
+| `{{ val }}` | {{ n }} | {{ pct }}% |
+{% endfor %}
+
+{% endfor %}
+
+---
+
+{% set matrix = namespace(items=[]) -%}
+{%- for combo in combos -%}
+  {%- set sub = tagged | selectattr('combo', 'equalto', combo) | rejectattr('status', 'equalto', 'running') | list -%}
+  {%- set done = sub | length -%}
+  {%- if done > 0 -%}
+    {%- set ok = sub | selectattr('status', 'equalto', 'success') | list | length -%}
+    {%- set bad = done - ok -%}
+    {%- set sr = (ok / done * 100) | round(0) | int -%}
+    {%- set _ = matrix.items.append({'combo': combo, 'done': done, 'ok': ok, 'bad': bad, 'sr': sr}) -%}
+  {%- endif -%}
+{%- endfor %}
+## 🅲 Configuration × Failure Rate
+
+> Success rate per distinct configuration. Configurations below 60% success
+> (with ≥2 completed jobs) are flagged for investigation. Running jobs are excluded.
+
+| Configuration | Completed | ✅ | ❌🔥 | Success % | |
+|---------------|-----------|----|------|-----------|--|
+{% for m in matrix.items | sort(attribute='sr') -%}
+| `{{ m.combo }}` | {{ m.done }} | {{ m.ok }} | {{ m.bad }} | {{ m.sr }}% | {% if m.sr < 60 and m.done >= 2 %}🟥{% elif m.sr < 90 %}🟨{% else %}🟩{% endif %} |
+{% endfor %}
+
+{% set problem = matrix.items | selectattr('sr', 'lt', 60) | selectattr('done', 'ge', 2) | list %}
+{% if problem | length > 0 %}
+!!! danger "Configurations needing attention ({{ problem | length }})"
+    The following configurations have a success rate below 60% with ≥2 completed jobs:
+{% for m in problem | sort(attribute='sr') %}    - `{{ m.combo }}` — {{ m.ok }}/{{ m.done }} success ({{ m.sr }}%)
+{% endfor %}
+{% else %}
+!!! success "No problematic configuration"
+    No configuration is below 60% success with ≥2 completed jobs. 🎉
+{% endif %}
+
+---
+
+*Generated by [dci-report-gen](https://github.com/fredericlepied/dci-report-gen) · Telco Partner CI*
