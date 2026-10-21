@@ -36,6 +36,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["yaml_path"] = _filter_yaml_path
     env.filters["line_chart_svg"] = _filter_line_chart_svg
     env.filters["trend_chart_svg"] = _filter_trend_chart_svg
+    env.filters["grouped_bar_chart_svg"] = _filter_grouped_bar_chart_svg
     return env
 
 
@@ -329,6 +330,166 @@ def _filter_line_chart_svg(
         out.append(
             f'<text x="{lx + 22}" y="{ly + 10}" fill="{TEXT}" font-size="9.5">'
             f'{_html.escape(s["name"])}</text>'
+        )
+
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+def _filter_grouped_bar_chart_svg(
+    rows: list[dict],
+    title: str = "",
+    series: list[dict] | None = None,
+) -> str:
+    """Generate a responsive inline SVG grouped (multiple) bar chart.
+
+    Expects ``rows`` as an ascending-ordered list of dicts, each with a
+    ``label`` (x-axis category, e.g. "WK-1") and one numeric value per series
+    key, e.g.::
+
+        rows = [
+            {"label": "WK-1", "total": 120, "pass": 110, "fail": 5,
+             "skip": 3, "notrun": 2},
+            ...
+        ]
+
+    ``series`` controls which bars are drawn, their order, label and colour.
+    Defaults to the 5 test-outcome series (total / pass / fail / skip / not
+    run). Y-axis auto-scales from 0 to a padded maximum. One group of bars is
+    drawn per row; a legend is rendered below the plot.
+    """
+    import html as _html
+
+    if not rows:
+        return ""
+
+    if series is None:
+        series = [
+            {"key": "total", "label": "Total", "color": "#2a78d6"},
+            {"key": "pass", "label": "Pass", "color": "#1baf7a"},
+            {"key": "fail", "label": "Fail", "color": "#e34948"},
+            {"key": "skip", "label": "Skip", "color": "#eda100"},
+            {"key": "notrun", "label": "Not run", "color": "#898781"},
+        ]
+
+    # --- max value for Y scale ---
+    vmax = 0
+    for r in rows:
+        for s in series:
+            try:
+                vmax = max(vmax, int(r.get(s["key"], 0) or 0))
+            except (TypeError, ValueError):
+                pass
+    if vmax <= 0:
+        vmax = 1
+    # pad to a "nice" rounded top
+    import math
+
+    step = 10 ** max(0, len(str(int(vmax))) - 2)
+    ymax = int(math.ceil(vmax / step) * step) if step else vmax
+    if ymax <= 0:
+        ymax = vmax
+
+    # --- layout (internal viewBox coordinates) ---
+    VW = 680
+    L, T, B = 52, 36, 268
+    R = VW - 12
+    pw, ph = R - L, B - T
+
+    n_groups = len(rows)
+    n_series = len(series)
+    # group width with 18% outer padding between groups
+    group_w = pw / max(n_groups, 1)
+    inner_pad = group_w * 0.18
+    bar_area = group_w - inner_pad
+    bar_w = bar_area / max(n_series, 1)
+
+    leg_row_h = 18
+    leg_top = B + 52
+    per_col = math.ceil(n_series / 3)  # up to 3 columns
+    n_cols = min(n_series, 3)
+    VH = leg_top + per_col * leg_row_h + 12
+
+    SURFACE = "#fcfcfb"
+    GRID = "#e1e0d9"
+    AXIS_CLR = "#c3c2b7"
+    MUTED = "#898781"
+    TEXT = "#52514e"
+
+    def yp(v: float) -> float:
+        return B - (v / ymax * ph)
+
+    out: list[str] = []
+    out.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {VW} {VH}" width="100%" '
+        f'style="display:block;font-family:system-ui,sans-serif;'
+        f'font-size:10px;background:{SURFACE}">'
+    )
+
+    if title:
+        out.append(
+            f'<text x="{(L + R) // 2}" y="22" text-anchor="middle" '
+            f'font-size="12" font-weight="600" fill="{TEXT}">'
+            f'{_html.escape(title)}</text>'
+        )
+
+    # Y-axis grid + labels (5 ticks)
+    for i in range(5):
+        v = ymax * i / 4
+        y = yp(v)
+        out.append(
+            f'<line x1="{L}" y1="{y:.1f}" x2="{R}" y2="{y:.1f}" '
+            f'stroke="{GRID}" stroke-width="1"/>'
+        )
+        out.append(
+            f'<text x="{L - 5}" y="{y + 4:.1f}" text-anchor="end" '
+            f'fill="{MUTED}" font-variant-numeric="tabular-nums">'
+            f'{int(round(v))}</text>'
+        )
+
+    # plot border
+    out.append(
+        f'<rect x="{L}" y="{T}" width="{pw}" height="{ph}" fill="none" '
+        f'stroke="{AXIS_CLR}" stroke-width="1"/>'
+    )
+
+    # bars + x labels
+    for gi, r in enumerate(rows):
+        gx = L + gi * group_w + inner_pad / 2
+        for si, s in enumerate(series):
+            try:
+                val = int(r.get(s["key"], 0) or 0)
+            except (TypeError, ValueError):
+                val = 0
+            bx = gx + si * bar_w
+            by = yp(val)
+            bh = B - by
+            out.append(
+                f'<rect x="{bx:.1f}" y="{by:.1f}" width="{max(bar_w - 1, 0.5):.1f}" '
+                f'height="{bh:.1f}" fill="{s["color"]}"/>'
+            )
+        # x-axis label (category) centred under the group
+        cx = gx + bar_area / 2
+        out.append(
+            f'<text x="{cx:.1f}" y="{B + 14}" text-anchor="end" fill="{MUTED}" '
+            f'transform="rotate(-35,{cx:.1f},{B + 14})">'
+            f'{_html.escape(str(r.get("label", gi)))}</text>'
+        )
+
+    # legend — up to 3 columns below the plot
+    col_w = (VW - L) // n_cols if n_cols else (VW - L)
+    for i, s in enumerate(series):
+        col = i // per_col
+        row = i % per_col
+        lx = L + col * col_w
+        ly = leg_top + row * leg_row_h
+        out.append(
+            f'<rect x="{lx}" y="{ly}" width="12" height="12" fill="{s["color"]}"/>'
+        )
+        out.append(
+            f'<text x="{lx + 18}" y="{ly + 10}" fill="{TEXT}" font-size="9.5">'
+            f'{_html.escape(s["label"])}</text>'
         )
 
     out.append("</svg>")
