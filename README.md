@@ -264,6 +264,18 @@ dci-report-gen examples/jira-backlog-trend.yaml -o erc-bugs.pdf \
   --var scope=Bugs --var 'title=E/// SLCM Bug Backlog & Flow Trend'
 ```
 
+### Ticket priority (failing daily jobs)
+
+Ranks the Jira tickets referenced in failing/error **daily** DCI job comments by a priority score combining how many days a ticket was seen, how many jobs it affected, and how many labs it spans. A native ElasticSearch aggregation (`by_comment` → `by_day` + nested `by_lab`) does the counting server-side; a second Jira source enriches each ranked id (summary/status/assignee/created) via a template-side join. Tickets marked Done/Closed/Resolved that still appear are flagged as possible regressions. Defaults to CILAB over the last 14 days:
+
+```bash
+dci-report-gen examples/ticket-priority.yaml -o ticket-priority.md
+
+# Other project / window (project drives both the id regex and the Jira JQL):
+dci-report-gen examples/ticket-priority.yaml -o ticket-priority.md \
+  --var project=CNF --var lookback_days=30
+```
+
 ### Using a predefined template
 
 ```yaml
@@ -378,6 +390,10 @@ examples/
 ├── weekly-report.md.j2
 ├── pr-jira-audit.yaml            # PR ↔ Jira traceability audit
 ├── pr-jira-audit.md.j2
+├── jira-backlog-trend.yaml       # Jira open-backlog stock/flow trend
+├── jira-backlog-trend.md.j2
+├── ticket-priority.yaml          # Rank tickets by failing-daily-job footprint
+├── ticket-priority.md.j2
 └── use-template.yaml             # Predefined template usage
 ```
 

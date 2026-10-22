@@ -1,0 +1,92 @@
+
+# {{ title }}
+
+**Date:** {{ date }} &nbsp;|&nbsp; **Project:** {{ project }} &nbsp;|&nbsp; **Window:** {{ start_date }} → {{ date }} ({{ lookback_days }} days)
+
+> **How tickets are ranked:** each ticket gets a priority score computed as
+> `days_seen × 2 + total_jobs + labs_count × 3`, where *days_seen* is the number of
+> distinct days (capped at the {{ lookback_days }}-day window) on which it appeared in a
+> failing/error daily job, *total_jobs* is the number of such jobs, and *labs_count* is
+> the number of distinct labs affected. Higher scores rank first; the top 20 are shown.
+
+{#- jobs is a 1-element list holding the raw aggregations object (aggs_raw) -#}
+{% set agg = jobs[0] if jobs else {} %}
+{% set buckets = agg.get("by_comment", {}).get("buckets", []) %}
+
+{#- Build a Jira lookup dict keyed by ticket id for template-side join -#}
+{% set jira = {} %}
+{% for t in tickets %}
+{%   set _ = jira.update({t.key: t}) %}
+{% endfor %}
+
+{#- Extract ranked tickets: id + footprint metrics + priority score -#}
+{% set ns = namespace(rows=[], total=0, ticketed=0) %}
+{% set id_re = project ~ "-(\\d+)" %}
+{% for b in buckets %}
+{%   set jobs_count = b.doc_count | int %}
+{%   set ns.total = ns.total + jobs_count %}
+{%   set num = b.key | regex_extract(id_re) %}
+{%   if num %}
+{%     set ticket_id = project ~ "-" ~ num %}
+{%     set days_raw = b.get("by_day", {}).get("buckets", []) | length %}
+{%     set days_seen = [days_raw, lookback_days | int] | min %}
+{%     set lab_buckets = b.get("by_lab", {}).get("lab_names", {}).get("buckets", []) %}
+{%     set labs_count = lab_buckets | length %}
+{%     set labs_list = lab_buckets | map(attribute="key") | join(", ") %}
+{%     set score = days_seen * 2 + jobs_count + labs_count * 3 %}
+{%     set ns.ticketed = ns.ticketed + jobs_count %}
+{%     set _ = ns.rows.append({
+         "ticket_id": ticket_id,
+         "days_seen": days_seen,
+         "jobs_count": jobs_count,
+         "labs_count": labs_count,
+         "labs_list": labs_list,
+         "score": score,
+       }) %}
+{%   endif %}
+{% endfor %}
+
+{% set ranked = ns.rows | sort(attribute="score", reverse=true) %}
+{% set ranked = ranked[:20] %}
+{% set no_ticket = ns.total - ns.ticketed %}
+
+## Summary
+
+| Metric | Value |
+| ------ | ----- |
+| Jobs in top comment groups (failure/error, daily) | {{ ns.total }} |
+| Jobs in groups with no {{ project }} ticket | {{ no_ticket }} |
+| Distinct {{ project }} tickets ranked | {{ ranked | length }} |
+
+## Prioritized tickets
+
+| Rank | Ticket | Summary | Status | Assignee | Open Since | Days Seen (/{{ lookback_days }}) | Total Jobs | Labs |
+| ---- | ------ | ------- | ------ | -------- | ---------- | --------- | ---------- | ---- |
+{% for r in ranked %}
+{%   set t = jira.get(r.ticket_id, {}) %}
+| {{ loop.index }} | {{ r.ticket_id | jira_link }} | {{ t.get("summary", "—") | truncate(60) | md_cell }} | {{ t.get("status", "—") | md_cell }} | {{ (t.get("assignee", "—") or "Unassigned") | md_cell }} | {{ t.get("created", "") | date }} | {{ r.days_seen }} | [{{ r.jobs_count }}]({{ r.ticket_id | dci_job_stats_link(start_date, date) }}) | {{ r.labs_count }} ({{ r.labs_list | md_cell }}) |
+{% endfor %}
+
+## Interpretation
+
+{% if ranked %}
+Over the last {{ lookback_days }} days, **{{ ns.total }}** failing/error daily jobs fell into the top comment groups; **{{ no_ticket }}** carry no {{ project }} reference. The top tickets to prioritize:
+
+{% for r in ranked[:3] %}
+{%   set t = jira.get(r.ticket_id, {}) %}
+{{ loop.index }}. **{{ r.ticket_id | jira_link }}** — {{ t.get("summary", "—") | truncate(80) }} · seen on **{{ r.days_seen }}/{{ lookback_days }} days**, **{{ r.jobs_count }} jobs**, **{{ r.labs_count }} lab(s)** ({{ r.labs_list }}).{% if t.get("status") %} Status: _{{ t.status }}_{% if t.get("assignee") %}, assignee: {{ t.assignee }}{% else %}, **unassigned**{% endif %}.{% endif %}
+
+{% endfor %}
+{% set regressions = [] %}
+{% for r in ranked %}
+{%   set t = jira.get(r.ticket_id, {}) %}
+{%   if t.get("status") in ["Done", "Closed", "Resolved"] %}
+{%     set _ = regressions.append(r.ticket_id) %}
+{%   endif %}
+{% endfor %}
+{% if regressions %}
+> ⚠️ **Possible regressions:** {{ regressions | join(", ") }} are marked Done/Closed/Resolved but still appear in recent failing jobs.
+{% endif %}
+{% else %}
+No {{ project }} tickets were found in failing/error daily jobs over the window. ✅
+{% endif %}
