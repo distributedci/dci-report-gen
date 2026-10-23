@@ -1,13 +1,14 @@
 
 report:
-  title: "{{project}} Ticket Priority — Failing Daily Jobs"
+  title: "{{project}} Ticket Priority — Failing Jobs"
   date: auto
   layout: ticket-priority.md.j2
 
 vars:
-  # Prioritize Jira tickets by their footprint across failing/error daily DCI jobs.
+  # Prioritize Jira tickets by their footprint across failing/error DCI jobs.
   # Ranks tickets referenced in job comments by a priority score combining how many
-  # days they were seen, how many jobs they affected, and how many labs they span.
+  # days they were seen, how many jobs they affected, and how many labs (or
+  # configurations, see group_by) they span.
   #
   # Override on the CLI, e.g.:
   #   --var project=CILAB --var lookback_days=14
@@ -16,22 +17,36 @@ vars:
   # Jira enrichment JQL, so switching project is a one-line change.
   project: "CILAB"
   lookback_days: "21"
+  # Footprint dimension used for the breadth score and the last table column.
+  # "remoteci" (default) ranks by how many labs a ticket spans; set to
+  # "configuration" for teams that run a single remoteci but multiple configs:
+  #   --var group_by=configuration
+  group_by: "remoteci"
   # Resolved date boundary (today minus lookback_days). The {{lookback_days}}
   # reference is substituted first, then {today-Nd} is resolved to a real date,
   # so the DCI query never sees a relative date.
   start_date: "{today-{{lookback_days}}d}"
-  # Enrichment: pull recent project tickets so the template can join Jira
-  # metadata (summary/status/assignee/created) onto the ranked ids.
-  jira_jql: "project = {{project}} ORDER BY updated DESC"
+  # Enrichment: fetch exactly the tickets referenced in the failing-job comments
+  # (the {{keys:jobs}} placeholder is expanded by the engine, after the jobs
+  # source is fetched, into the list of {{project}}-N keys found there). This
+  # joins Jira metadata (summary/status/assignee/created) onto the ranked ids and
+  # works regardless of project size.
+  jira_jql: "key in ({{keys:jobs}}) ORDER BY key DESC"
   jira_max: "500"
+  # Tag filter clause appended to the DCI job query. Defaults to daily jobs.
+  # Teams not using the "daily" tag can override, e.g.:
+  #   --var tags_filter=" and (tags in ['nightly'])"
+  # or drop the tag filter entirely with:
+  #   --var tags_filter=""
+  tags_filter: " and (tags in ['daily'])"
 
 data:
-  # Raw ElasticSearch aggregation over failing/error daily jobs in the window.
+  # Raw ElasticSearch aggregation over failing/error jobs in the window.
   # aggs_raw returns the untouched "aggregations" object as a 1-element list,
   # so the template reads jobs[0].by_comment.buckets directly.
   jobs:
     type: dci
-    query: "(((status in ['failure', 'error']) and (tags in ['daily'])) and (created_at>='{{start_date}}'))"
+    query: "((status in ['failure', 'error']{{tags_filter}}) and (created_at>='{{start_date}}'))"
     limit: 1
     fields: ["id"]
     aggs_raw: true
@@ -53,6 +68,10 @@ data:
                 terms:
                   field: remoteci.name
                   size: 50
+          by_config:
+            terms:
+              field: configuration
+              size: 50
 
   # Jira enrichment set. Covers the ranked ids so the template can join metadata.
   tickets:

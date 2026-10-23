@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
 
 from dci_report_gen.config import ReportConfig
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Placeholder letting one source's query depend on keys found in another source's
+# results, e.g. a Jira JQL `key in ({{keys:jobs}})` enriched from DCI job comments.
+# The colon makes it survive config-time {{var}} substitution untouched.
+_KEYS_PLACEHOLDER = re.compile(r"\{\{keys:(\w+)\}\}")
+
+
+def _resolve_key_placeholders(
+    text: str, fetched: dict[str, list], project: str
+) -> tuple[str, bool, int]:
+    """Replace `{{keys:<source>}}` with the comma-separated PROJECT-N ticket keys
+    found anywhere in that source's already-fetched results.
+
+    Returns (new_text, had_placeholder, key_count).
+    """
+    counts: list[int] = []
+    pat = re.compile(rf"\b{re.escape(project)}-\d+\b") if project else None
+
+    def repl(match: re.Match) -> str:
+        result = fetched.get(match.group(1), [])
+        keys = sorted(set(pat.findall(json.dumps(result)))) if pat else []
+        counts.append(len(keys))
+        return ", ".join(keys)
+
+    new_text = _KEYS_PLACEHOLDER.sub(repl, text)
+    return new_text, bool(counts), (counts[0] if counts else 0)
 
 
 class ReportEngine:
@@ -52,7 +80,20 @@ class ReportEngine:
         from dci_report_gen.renderers.jinja import render_markdown, markdown_to_pdf
 
         fetched = {}
+        project = config.vars.get("project", "")
         for name, source in config.data.items():
+            empty_dep = False
+            for attr in ("query", "jql"):
+                val = getattr(source, attr)
+                if val and "{{keys:" in val:
+                    new_val, had, n = _resolve_key_placeholders(val, fetched, project)
+                    setattr(source, attr, new_val)
+                    if had and n == 0:
+                        empty_dep = True
+            if empty_dep:
+                print(f"  Fetching: {name}... skipped (no referenced keys)", file=sys.stderr)
+                fetched[name] = []
+                continue
             print(f"  Fetching: {name}...", file=sys.stderr)
             fetcher = self._get_fetcher(source.type)
             fetched[name] = fetcher.fetch(source)
