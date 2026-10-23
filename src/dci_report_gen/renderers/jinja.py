@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import markdown as md
 import yaml
@@ -33,6 +34,8 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["github_run_link"] = _filter_github_run_link
     env.filters["find_file"] = _filter_find_file
     env.filters["regex_extract"] = _filter_regex_extract
+    env.filters["md_cell"] = _filter_md_cell
+    env.filters["dci_job_stats_link"] = _filter_dci_job_stats_link
     env.filters["yaml_path"] = _filter_yaml_path
     env.filters["line_chart_svg"] = _filter_line_chart_svg
     env.filters["trend_chart_svg"] = _filter_trend_chart_svg
@@ -147,6 +150,31 @@ def _filter_find_file(files, pattern):
         if re.search(pattern, f.get("name", "")):
             return f.get("content")
     return None
+
+
+def _filter_md_cell(value):
+    """Escape a value for safe use inside a Markdown table cell.
+
+    Pipes would otherwise end the cell; newlines would break the row.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace("\\", "\\\\").replace("|", "\\|")
+    text = re.sub(r"\s*[\r\n]+\s*", " ", text)
+    return text
+
+
+def _filter_dci_job_stats_link(
+    comment, after, before, base_url="https://www.distributed-ci.io"
+):
+    """Build a DCI analytics job_stats URL filtering by comment and date range."""
+    query = quote_plus(f"(comment = '{comment}')")
+    return (
+        f"{base_url}/analytics/job_stats?query={query}"
+        f"&range=custom&after={after}&before={before}&limit=200&offset=0"
+        f"&groupByKey=topic&sliceByKey=name"
+    )
 
 
 def _filter_regex_extract(text, pattern):

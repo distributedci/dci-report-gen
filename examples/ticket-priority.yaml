@@ -1,0 +1,62 @@
+
+report:
+  title: "{{project}} Ticket Priority — Failing Daily Jobs"
+  date: auto
+  layout: ticket-priority.md.j2
+
+vars:
+  # Prioritize Jira tickets by their footprint across failing/error daily DCI jobs.
+  # Ranks tickets referenced in job comments by a priority score combining how many
+  # days they were seen, how many jobs they affected, and how many labs they span.
+  #
+  # Override on the CLI, e.g.:
+  #   --var project=CILAB --var lookback_days=14
+  #
+  # The project var drives BOTH the ticket-id regex (e.g. CILAB-1234) and the
+  # Jira enrichment JQL, so switching project is a one-line change.
+  project: "CILAB"
+  lookback_days: "21"
+  # Resolved date boundary (today minus lookback_days). The {{lookback_days}}
+  # reference is substituted first, then {today-Nd} is resolved to a real date,
+  # so the DCI query never sees a relative date.
+  start_date: "{today-{{lookback_days}}d}"
+  # Enrichment: pull recent project tickets so the template can join Jira
+  # metadata (summary/status/assignee/created) onto the ranked ids.
+  jira_jql: "project = {{project}} ORDER BY updated DESC"
+  jira_max: "500"
+
+data:
+  # Raw ElasticSearch aggregation over failing/error daily jobs in the window.
+  # aggs_raw returns the untouched "aggregations" object as a 1-element list,
+  # so the template reads jobs[0].by_comment.buckets directly.
+  jobs:
+    type: dci
+    query: "(((status in ['failure', 'error']) and (tags in ['daily'])) and (created_at>='{{start_date}}'))"
+    limit: 1
+    fields: ["id"]
+    aggs_raw: true
+    aggs:
+      by_comment:
+        terms:
+          field: comment
+          size: 200
+        aggs:
+          by_day:
+            date_histogram:
+              field: created_at
+              calendar_interval: day
+          by_lab:
+            nested:
+              path: remoteci
+            aggs:
+              lab_names:
+                terms:
+                  field: remoteci.name
+                  size: 50
+
+  # Jira enrichment set. Covers the ranked ids so the template can join metadata.
+  tickets:
+    type: jira
+    jql: "{{jira_jql}}"
+    max_results: 500
+    fields: ["key", "summary", "status", "assignee", "created"]
