@@ -40,6 +40,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["line_chart_svg"] = _filter_line_chart_svg
     env.filters["trend_chart_svg"] = _filter_trend_chart_svg
     env.filters["grouped_bar_chart_svg"] = _filter_grouped_bar_chart_svg
+    env.filters["stacked_bar_chart_svg"] = _filter_stacked_bar_chart_svg
     return env
 
 
@@ -506,6 +507,184 @@ def _filter_grouped_bar_chart_svg(
         )
 
     # legend — up to 3 columns below the plot
+    col_w = (VW - L) // n_cols if n_cols else (VW - L)
+    for i, s in enumerate(series):
+        col = i // per_col
+        row = i % per_col
+        lx = L + col * col_w
+        ly = leg_top + row * leg_row_h
+        out.append(
+            f'<rect x="{lx}" y="{ly}" width="12" height="12" fill="{s["color"]}"/>'
+        )
+        out.append(
+            f'<text x="{lx + 18}" y="{ly + 10}" fill="{TEXT}" font-size="9.5">'
+            f'{_html.escape(s["label"])}</text>'
+        )
+
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+STACKED_PALETTE = [
+    "#2a78d6", "#d6762a", "#2ca05a", "#a02c8a", "#e34948",
+    "#eda100", "#17a2b8", "#6f42c1", "#8c564b", "#898781",
+]
+
+
+def _filter_stacked_bar_chart_svg(
+    rows: list[dict],
+    series: list[dict] | None = None,
+    title: str = "",
+    show_totals: bool = True,
+) -> str:
+    """Generate a responsive inline SVG stacked (cumulative) bar chart.
+
+    Expects ``rows`` as an ascending-ordered list of dicts, each with a
+    ``label`` (x-axis category, e.g. "W44") and one numeric value per series
+    key, e.g.::
+
+        rows = [
+            {"label": "W43", "OpenShift": 1700, "RHEL": 80},
+            {"label": "W44", "OpenShift": 1650, "RHEL": 70},
+        ]
+
+    ``series`` is a list of ``{"key": ..., "label": ..., "color": ...}``
+    dicts drawn bottom-up in the given order. ``label`` defaults to ``key``
+    and ``color`` to a 10-colour palette (stable by position). When
+    ``series`` is omitted, it is inferred from the keys of the rows (all
+    keys except ``label``, in first-seen order).
+
+    The Y-axis auto-scales from 0 to the padded maximum stacked total. When
+    ``show_totals`` is true the total is printed above each bar.
+    """
+    import html as _html
+    import math
+
+    if not rows:
+        return ""
+
+    if series is None:
+        keys: list[str] = []
+        for r in rows:
+            for k in r:
+                if k != "label" and k not in keys:
+                    keys.append(k)
+        series = [{"key": k} for k in keys]
+    if not series:
+        return ""
+
+    series = [
+        {
+            "key": s["key"],
+            "label": str(s.get("label", s["key"])),
+            "color": s.get("color") or STACKED_PALETTE[i % len(STACKED_PALETTE)],
+        }
+        for i, s in enumerate(series)
+    ]
+
+    def val(r: dict, key: str) -> int:
+        try:
+            return max(int(r.get(key, 0) or 0), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    totals = [sum(val(r, s["key"]) for s in series) for r in rows]
+    vmax = max(totals) if totals else 0
+    if vmax <= 0:
+        vmax = 1
+    step = 10 ** max(0, len(str(int(vmax))) - 2)
+    ymax = int(math.ceil(vmax * 1.05 / step) * step) if step else vmax
+    if ymax <= 0:
+        ymax = vmax
+
+    # --- layout (internal viewBox coordinates) ---
+    VW = 680
+    L, T, B = 52, 36, 268
+    R = VW - 12
+    pw, ph = R - L, B - T
+
+    n_groups = len(rows)
+    n_series = len(series)
+    group_w = pw / max(n_groups, 1)
+    bar_w = group_w * 0.7
+
+    leg_row_h = 18
+    leg_top = B + 52
+    n_cols = min(n_series, 3)
+    per_col = math.ceil(n_series / 3)
+    VH = leg_top + per_col * leg_row_h + 12
+
+    SURFACE = "#fcfcfb"
+    GRID = "#e1e0d9"
+    AXIS_CLR = "#c3c2b7"
+    MUTED = "#898781"
+    TEXT = "#52514e"
+
+    def yp(v: float) -> float:
+        return B - (v / ymax * ph)
+
+    out: list[str] = []
+    out.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {VW} {VH}" width="100%" '
+        f'style="display:block;font-family:system-ui,sans-serif;'
+        f'font-size:10px;background:{SURFACE}">'
+    )
+
+    if title:
+        out.append(
+            f'<text x="{(L + R) // 2}" y="22" text-anchor="middle" '
+            f'font-size="12" font-weight="600" fill="{TEXT}">'
+            f'{_html.escape(title)}</text>'
+        )
+
+    for i in range(5):
+        v = ymax * i / 4
+        y = yp(v)
+        out.append(
+            f'<line x1="{L}" y1="{y:.1f}" x2="{R}" y2="{y:.1f}" '
+            f'stroke="{GRID}" stroke-width="1"/>'
+        )
+        out.append(
+            f'<text x="{L - 5}" y="{y + 4:.1f}" text-anchor="end" '
+            f'fill="{MUTED}" font-variant-numeric="tabular-nums">'
+            f'{int(round(v))}</text>'
+        )
+
+    out.append(
+        f'<rect x="{L}" y="{T}" width="{pw}" height="{ph}" fill="none" '
+        f'stroke="{AXIS_CLR}" stroke-width="1"/>'
+    )
+
+    for gi, r in enumerate(rows):
+        bx = L + gi * group_w + (group_w - bar_w) / 2
+        acc = 0
+        for s in series:
+            v = val(r, s["key"])
+            if v <= 0:
+                continue
+            y_top = yp(acc + v)
+            h = yp(acc) - y_top
+            out.append(
+                f'<rect x="{bx:.1f}" y="{y_top:.1f}" width="{bar_w:.1f}" '
+                f'height="{h:.1f}" fill="{s["color"]}">'
+                f'<title>{_html.escape(str(r.get("label", gi)))} - '
+                f'{_html.escape(s["label"])}: {v}</title></rect>'
+            )
+            acc += v
+        cx = bx + bar_w / 2
+        if show_totals and acc > 0:
+            out.append(
+                f'<text x="{cx:.1f}" y="{yp(acc) - 4:.1f}" text-anchor="middle" '
+                f'fill="{TEXT}" font-size="9" font-variant-numeric="tabular-nums">'
+                f'{acc}</text>'
+            )
+        out.append(
+            f'<text x="{cx:.1f}" y="{B + 14}" text-anchor="end" fill="{MUTED}" '
+            f'transform="rotate(-35,{cx:.1f},{B + 14})">'
+            f'{_html.escape(str(r.get("label", gi)))}</text>'
+        )
+
     col_w = (VW - L) // n_cols if n_cols else (VW - L)
     for i, s in enumerate(series):
         col = i // per_col

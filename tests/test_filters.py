@@ -6,6 +6,7 @@ from dci_report_gen.renderers.jinja import (
     _filter_human_duration,
     _filter_regex_extract,
     _filter_short_id,
+    _filter_stacked_bar_chart_svg,
     _filter_status_emoji,
     _filter_yaml_path,
 )
@@ -184,3 +185,34 @@ def test_yaml_path_empty():
 
 def test_yaml_path_invalid_yaml():
     assert _filter_yaml_path("{{invalid", "key") is None
+
+
+def test_stacked_bar_chart_svg_empty():
+    assert _filter_stacked_bar_chart_svg([]) == ""
+
+
+def test_stacked_bar_chart_svg_basic():
+    rows = [
+        {"label": "W43", "OpenShift": 100, "RHEL": 20},
+        {"label": "W44", "OpenShift": 80, "RHEL": 0},
+    ]
+    series = [
+        {"key": "OpenShift", "color": "#111111"},
+        {"key": "RHEL", "label": "RHEL", "color": "#222222"},
+    ]
+    svg = _filter_stacked_bar_chart_svg(rows, series, title="Jobs by product")
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert "Jobs by product" in svg
+    assert "W43" in svg and "W44" in svg
+    # 3 non-zero segments (zero values are skipped) + 2 legend swatches
+    assert svg.count('fill="#111111"') == 3
+    assert svg.count('fill="#222222"') == 2
+    # stacked totals printed above bars
+    assert ">120</text>" in svg and ">80</text>" in svg
+
+
+def test_stacked_bar_chart_svg_infers_series():
+    rows = [{"label": "W1", "a": 1, "b": 2}, {"label": "W2", "c": 3}]
+    svg = _filter_stacked_bar_chart_svg(rows, show_totals=False)
+    for name in ("a", "b", "c"):
+        assert f">{name}</text>" in svg
