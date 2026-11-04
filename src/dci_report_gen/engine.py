@@ -64,6 +64,12 @@ class ReportEngine:
                 )
 
                 self._fetchers[source_type] = JiraBacklogTrendFetcher()
+            elif source_type == "markdown_table":
+                from dci_report_gen.fetchers.markdown_table import (
+                    MarkdownTableFetcher,
+                )
+
+                self._fetchers[source_type] = MarkdownTableFetcher()
             else:
                 raise ValueError(f"Unknown source type: {source_type}")
         return self._fetchers[source_type]
@@ -94,6 +100,10 @@ class ReportEngine:
                 print(f"  Fetching: {name}... skipped (no referenced keys)", file=sys.stderr)
                 fetched[name] = []
                 continue
+            if source.type == "markdown_table" and config_path:
+                # Resolve relative file paths against the config file location.
+                source.params = dict(source.params or {})
+                source.params.setdefault("base_dir", str(Path(config_path).parent))
             print(f"  Fetching: {name}...", file=sys.stderr)
             fetcher = self._get_fetcher(source.type)
             fetched[name] = fetcher.fetch(source)
