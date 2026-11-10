@@ -41,6 +41,45 @@ def _flatten_row(hit: dict, fields: list[str] | None) -> dict:
     return hit
 
 
+# DCI server caps a single search page at 200 results.
+DCI_MAX_PAGE_SIZE = 200
+
+
+def _hits_and_total(data: dict) -> tuple[list[dict], int | None]:
+    hits_obj = data.get("hits", {})
+    if not isinstance(hits_obj, dict):
+        return [h.get("_source", h) for h in hits_obj], None
+    hits = [h.get("_source", h) for h in hits_obj.get("hits", [])]
+    total = hits_obj.get("total")
+    if isinstance(total, dict):
+        total = total.get("value")
+    return hits, int(total) if total is not None else None
+
+
+def _paginated_search(ctx, params: dict, max_results: int) -> list[dict]:
+    """Fetch up to max_results jobs, paginating with offset/limit since the
+    server caps each page at DCI_MAX_PAGE_SIZE results."""
+    page_size = max(1, min(DCI_MAX_PAGE_SIZE, max_results))
+    offset = 0
+    results: list[dict] = []
+    while len(results) < max_results:
+        limit = min(page_size, max_results - len(results))
+        resp = dci_job.search(ctx, **params, limit=limit, offset=offset)
+        if resp.status_code != 200:
+            raise RuntimeError(f"DCI search failed ({resp.status_code}): {resp.text}")
+        page, total = _hits_and_total(resp.json())
+        results.extend(page)
+        if total is not None and total > len(page):
+            print(
+                f"    … fetched {len(results)}/{min(total, max_results)} jobs (offset={offset})",
+                file=sys.stderr,
+            )
+        if len(page) < limit or (total is not None and offset + len(page) >= total):
+            break
+        offset += len(page)
+    return results[:max_results]
+
+
 class DCIFetcher:
     def fetch(self, source: SourceConfig) -> list[dict]:
         ctx = _get_context()
@@ -68,28 +107,25 @@ class DCIFetcher:
 
         import json as _json
 
-        params = {"query": source.query, "limit": source.limit, "sort": source.sort}
+        params = {"query": source.query, "sort": source.sort}
         if fields:
             params["fields"] = ",".join(fields)
+
         if source.aggs:
             # DCI server requires the aggregation wrapped under {"aggs": ...}
             # and sent as the "json-aggs" parameter (not "aggs").
             params["json-aggs"] = _json.dumps({"aggs": source.aggs})
-
-        resp = dci_job.search(ctx, **params)
-        if resp.status_code != 200:
-            raise RuntimeError(f"DCI search failed ({resp.status_code}): {resp.text}")
-
-        data = resp.json()
-
-        if source.aggs and "aggregations" in data:
-            if source.aggs_raw:
-                return [data["aggregations"]]
-            return self._flatten_aggs(data["aggregations"])
-
-        hits_obj = data.get("hits", {})
-        hits = hits_obj.get("hits", []) if isinstance(hits_obj, dict) else hits_obj
-        sources = [hit.get("_source", hit) for hit in hits]
+            resp = dci_job.search(ctx, **params, limit=source.limit)
+            if resp.status_code != 200:
+                raise RuntimeError(f"DCI search failed ({resp.status_code}): {resp.text}")
+            data = resp.json()
+            if "aggregations" in data:
+                if source.aggs_raw:
+                    return [data["aggregations"]]
+                return self._flatten_aggs(data["aggregations"])
+            sources, _ = _hits_and_total(data)
+        else:
+            sources = _paginated_search(ctx, params, source.limit)
 
         if source.include_results or source.include_files:
             if source.include_files:
@@ -143,37 +179,16 @@ class DCIFetcher:
             dt = datetime.fromisoformat(date_str[:19])
             return (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
 
-        # Paginate through all matching jobs (page_size fixed at 200)
-        page_size = 200
-        offset = 0
-        all_jobs: list[dict] = []
-        while True:
-            params = {
+        # Fetch all matching jobs (no upper bound)
+        all_jobs = _paginated_search(
+            ctx,
+            {
                 "query": source.query,
-                "limit": page_size,
-                "offset": offset,
                 "sort": source.sort,
                 "fields": "id,remoteci.name,created_at,files.name",
-            }
-            resp = dci_job.search(ctx, **params)
-            if resp.status_code != 200:
-                raise RuntimeError(f"DCI search failed ({resp.status_code}): {resp.text}")
-            data = resp.json()
-            hits_obj = data.get("hits", {})
-            hits = hits_obj.get("hits", []) if isinstance(hits_obj, dict) else hits_obj
-            page = [h.get("_source", h) for h in hits]
-            all_jobs.extend(page)
-
-            total_obj = hits_obj.get("total", 0) if isinstance(hits_obj, dict) else 0
-            total_val = total_obj.get("value", 0) if isinstance(total_obj, dict) else int(total_obj)
-
-            print(
-                f"    … fetched {len(all_jobs)}/{total_val} jobs (offset={offset})",
-                file=sys.stderr,
-            )
-            if len(page) < page_size or offset + page_size >= total_val:
-                break
-            offset += page_size
+            },
+            max_results=sys.maxsize,
+        )
 
         # Aggregate: remoteci → week → {total, with_log}
         rc_weeks: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {"total": 0, "with_log": 0}))
