@@ -6,8 +6,10 @@ from dci_report_gen.renderers.jinja import (
     _filter_human_duration,
     _filter_regex_extract,
     _filter_short_id,
+    _filter_sparkline,
     _filter_stacked_bar_chart_svg,
     _filter_status_emoji,
+    _filter_trend_chart_svg,
     _filter_yaml_path,
 )
 
@@ -216,3 +218,75 @@ def test_stacked_bar_chart_svg_infers_series():
     svg = _filter_stacked_bar_chart_svg(rows, show_totals=False)
     for name in ("a", "b", "c"):
         assert f">{name}</text>" in svg
+
+
+def _viewbox_height(svg: str) -> int:
+    import re
+
+    return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
+
+
+def test_stacked_bar_chart_svg_default_angle_unchanged():
+    rows = [{"label": "W1", "a": 1}]
+    svg = _filter_stacked_bar_chart_svg(rows)
+    assert "rotate(-35," in svg
+
+
+def test_stacked_bar_chart_svg_label_angle():
+    rows = [{"label": "BM·HA·OVN·dual", "a": 3}]
+    svg = _filter_stacked_bar_chart_svg(rows, label_angle=45)
+    assert "rotate(-45," in svg
+    assert "rotate(-35," not in svg
+
+
+def test_stacked_bar_chart_svg_horizontal_labels():
+    rows = [{"label": "W1", "a": 3}]
+    svg = _filter_stacked_bar_chart_svg(rows, label_angle=0)
+    assert "rotate(" not in svg
+    assert 'text-anchor="middle" fill="#898781">W1<' in svg
+
+
+def test_stacked_bar_chart_svg_grows_for_long_labels():
+    short = _filter_stacked_bar_chart_svg([{"label": "W1", "a": 1}], label_angle=45)
+    long_ = _filter_stacked_bar_chart_svg(
+        [{"label": "baremetal/highlyavailable/ovnkubernetes/dual", "a": 1}],
+        label_angle=45,
+    )
+    assert _viewbox_height(long_) > _viewbox_height(short)
+
+
+def test_trend_chart_svg_y_max_and_angle():
+    rows = [{"date": "2026-W44", "rate": 50}, {"date": "2026-W45", "rate": 80}]
+    svg = _filter_trend_chart_svg(
+        rows, title="Success rate", value_key="rate", y_max=100, label_angle=45
+    )
+    assert ">100<" in svg  # top of Y axis pinned to 100
+    assert "rotate(-45," in svg
+
+
+def test_trend_chart_svg_gaps_for_missing_values():
+    rows = [
+        {"date": "W1", "rate": 50},
+        {"date": "W2", "rate": 60},
+        {"date": "W3", "rate": None},
+        {"date": "W4", "rate": 70},
+        {"date": "W5", "rate": 90},
+    ]
+    svg = _filter_trend_chart_svg(rows, value_key="rate", y_max=100)
+    # two segments of 2 points each -> two polylines, missing point not drawn
+    assert svg.count("<polyline") == 2
+    assert svg.count('r="3.5"') == 4
+
+
+def test_sparkline_basic():
+    assert _filter_sparkline([0, 50, 100], lo=0, hi=100) == "▁▅█"
+
+
+def test_sparkline_auto_scale_and_missing():
+    assert _filter_sparkline([10, None, 20]) == "▁·█"
+
+
+def test_sparkline_flat_and_empty():
+    assert _filter_sparkline([5, 5]) == "▄▄"
+    assert _filter_sparkline([]) == ""
+    assert _filter_sparkline([None, None]) == "··"

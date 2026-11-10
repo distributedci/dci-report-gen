@@ -41,6 +41,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["trend_chart_svg"] = _filter_trend_chart_svg
     env.filters["grouped_bar_chart_svg"] = _filter_grouped_bar_chart_svg
     env.filters["stacked_bar_chart_svg"] = _filter_stacked_bar_chart_svg
+    env.filters["sparkline"] = _filter_sparkline
     return env
 
 
@@ -531,11 +532,87 @@ STACKED_PALETTE = [
 ]
 
 
+def _clamp_angle(angle) -> float:
+    """Return a label rotation angle clamped to [0, 90] degrees."""
+    try:
+        return min(max(float(angle), 0.0), 90.0)
+    except (TypeError, ValueError):
+        return 35.0
+
+
+def _label_drop(labels: list[str], angle: float, char_w: float = 5.8) -> int:
+    """Vertical space (px) needed below the x-axis for rotated labels.
+
+    Approximates the rendered width of the longest label at 10px
+    system-ui and projects it on the vertical axis. Never returns less than
+    the historical 52px so existing charts keep their layout.
+    """
+    import math
+
+    longest = max((len(lbl) for lbl in labels), default=0)
+    drop = longest * char_w * math.sin(math.radians(angle)) + 22
+    return max(52, int(math.ceil(drop)))
+
+
+def _x_label(x: float, y: float, label: str, angle: float, fill: str) -> str:
+    """Render one x-axis label, rotated by ``angle`` degrees (anchor end)."""
+    import html as _html
+
+    if angle <= 0:
+        return (
+            f'<text x="{x:.1f}" y="{y}" text-anchor="middle" fill="{fill}">'
+            f"{_html.escape(label)}</text>"
+        )
+    return (
+        f'<text x="{x:.1f}" y="{y}" text-anchor="end" fill="{fill}" '
+        f'transform="rotate(-{angle:g},{x:.1f},{y})">{_html.escape(label)}</text>'
+    )
+
+
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _filter_sparkline(values, lo: float | None = None, hi: float | None = None,
+                      missing: str = "·") -> str:
+    """Render a list of numbers as a Unicode sparkline (e.g. ``▃▅▇▆▂``).
+
+    ``lo``/``hi`` pin the scale (e.g. ``0``/``100`` for percentages);
+    otherwise the min/max of the present values are used. ``None`` or empty
+    values are rendered with ``missing`` so sparse series keep their width.
+    """
+    if not values:
+        return ""
+    nums: list[float | None] = []
+    for v in values:
+        try:
+            nums.append(None if v is None or v == "" else float(v))
+        except (TypeError, ValueError):
+            nums.append(None)
+    present = [v for v in nums if v is not None]
+    if not present:
+        return missing * len(nums)
+    vmin = float(lo) if lo is not None else min(present)
+    vmax = float(hi) if hi is not None else max(present)
+    span = vmax - vmin
+    top = len(SPARK_CHARS) - 1
+    out = []
+    for v in nums:
+        if v is None:
+            out.append(missing)
+        elif span <= 0:
+            out.append(SPARK_CHARS[top // 2])
+        else:
+            idx = round((min(max(v, vmin), vmax) - vmin) / span * top)
+            out.append(SPARK_CHARS[idx])
+    return "".join(out)
+
+
 def _filter_stacked_bar_chart_svg(
     rows: list[dict],
     series: list[dict] | None = None,
     title: str = "",
     show_totals: bool = True,
+    label_angle: float = 35,
 ) -> str:
     """Generate a responsive inline SVG stacked (cumulative) bar chart.
 
@@ -556,6 +633,10 @@ def _filter_stacked_bar_chart_svg(
 
     The Y-axis auto-scales from 0 to the padded maximum stacked total. When
     ``show_totals`` is true the total is printed above each bar.
+
+    ``label_angle`` sets the x-axis label rotation in degrees (0 = horizontal,
+    90 = vertical). The space below the plot grows with the longest label so
+    rotated labels never overlap the legend.
     """
     import html as _html
     import math
@@ -608,8 +689,9 @@ def _filter_stacked_bar_chart_svg(
     group_w = pw / max(n_groups, 1)
     bar_w = group_w * 0.7
 
+    angle = _clamp_angle(label_angle)
     leg_row_h = 18
-    leg_top = B + 52
+    leg_top = B + _label_drop([str(r.get("label", "")) for r in rows], angle)
     n_cols = min(n_series, 3)
     per_col = math.ceil(n_series / 3)
     VH = leg_top + per_col * leg_row_h + 12
@@ -679,11 +761,7 @@ def _filter_stacked_bar_chart_svg(
                 f'fill="{TEXT}" font-size="9" font-variant-numeric="tabular-nums">'
                 f'{acc}</text>'
             )
-        out.append(
-            f'<text x="{cx:.1f}" y="{B + 14}" text-anchor="end" fill="{MUTED}" '
-            f'transform="rotate(-35,{cx:.1f},{B + 14})">'
-            f'{_html.escape(str(r.get("label", gi)))}</text>'
-        )
+        out.append(_x_label(cx, B + 14, str(r.get("label", gi)), angle, MUTED))
 
     col_w = (VW - L) // n_cols if n_cols else (VW - L)
     for i, s in enumerate(series):
@@ -709,6 +787,8 @@ def _filter_trend_chart_svg(
     value_key: str = "open",
     label_key: str = "date",
     series: list[dict] | None = None,
+    label_angle: float = 35,
+    y_max: float | None = None,
 ) -> str:
     """Generate a responsive inline SVG trend chart with one or more lines.
 
@@ -724,6 +804,11 @@ def _filter_trend_chart_svg(
         ]
 
     When ``series`` is given, ``value_key`` is ignored and a legend is drawn.
+
+    ``label_angle`` sets the x-axis label rotation in degrees. ``y_max`` pins
+    the top of the Y-axis (e.g. ``100`` for percentages) instead of
+    auto-scaling. Missing values (``None``) break the line instead of being
+    plotted as zero, so gaps in sparse series stay visible.
     """
     import html as _html
 
@@ -750,30 +835,38 @@ def _filter_trend_chart_svg(
     else:
         plot_series = [{"key": value_key, "label": value_key, "color": "#2a78d6"}]
 
+    def _num(v):
+        if v is None or v == "":
+            return None
+        return float(v)
+
     try:
-        series_values = [
-            [float(r.get(s["key"], 0) or 0) for r in rows] for s in plot_series
-        ]
+        series_values = [[_num(r.get(s["key"])) for r in rows] for s in plot_series]
     except (ValueError, TypeError):
         return ""
     n = len(labels)
     if n == 0 or not series_values:
         return ""
 
-    vmax = max(max(vals) for vals in series_values)
-    # pad the top ~10% and round up to a "nice" number
-    top = vmax * 1.1 if vmax > 0 else 1.0
     import math
 
-    magnitude = 10 ** max(0, len(str(int(top))) - 2)
-    top = math.ceil(top / magnitude) * magnitude if magnitude else math.ceil(top)
-    top = max(top, 1)
+    if y_max is not None and float(y_max) > 0:
+        top = float(y_max)
+    else:
+        present = [v for vals in series_values for v in vals if v is not None]
+        vmax = max(present) if present else 0.0
+        # pad the top ~10% and round up to a "nice" number
+        top = vmax * 1.1 if vmax > 0 else 1.0
+        magnitude = 10 ** max(0, len(str(int(top))) - 2)
+        top = math.ceil(top / magnitude) * magnitude if magnitude else math.ceil(top)
+        top = max(top, 1)
 
+    angle = _clamp_angle(label_angle)
     VW = 680
     L, T, B = 52, 36, 250
     R = VW - 14
     pw, ph = R - L, B - T
-    VH = B + 60
+    VH = B + max(60, _label_drop(labels, angle) + 8)
 
     SURFACE = "#fcfcfb"
     GRID = "#e1e0d9"
@@ -818,10 +911,7 @@ def _filter_trend_chart_svg(
     for i, label in enumerate(labels):
         x = xp(i)
         if i % stride == 0 or i == n - 1:
-            out.append(
-                f'<text x="{x}" y="{B + 14}" text-anchor="end" fill="{MUTED}" '
-                f'transform="rotate(-35,{x},{B + 14})">{_html.escape(label)}</text>'
-            )
+            out.append(_x_label(x, B + 14, label, angle, MUTED))
 
     out.append(
         f'<rect x="{L}" y="{T}" width="{pw}" height="{ph}" fill="none" '
@@ -830,13 +920,24 @@ def _filter_trend_chart_svg(
 
     for s, values in zip(plot_series, series_values):
         color = s["color"]
-        pts = [(xp(i), yp(v)) for i, v in enumerate(values)]
-        pts_str = " ".join(f"{x},{y}" for x, y in pts)
-        out.append(
-            f'<polyline points="{pts_str}" fill="none" stroke="{color}" '
-            f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
-        )
-        for (x, y), v in zip(pts, values):
+        # Split into contiguous segments so missing values leave a gap.
+        segments: list[list[tuple[int, int]]] = [[]]
+        for i, v in enumerate(values):
+            if v is None:
+                if segments[-1]:
+                    segments.append([])
+                continue
+            segments[-1].append((xp(i), yp(v)))
+        pts = [p for seg in segments for p in seg]
+        for seg in segments:
+            if len(seg) < 2:
+                continue
+            pts_str = " ".join(f"{x},{y}" for x, y in seg)
+            out.append(
+                f'<polyline points="{pts_str}" fill="none" stroke="{color}" '
+                f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+            )
+        for x, y in pts:
             out.append(
                 f'<circle cx="{x}" cy="{y}" r="5" fill="{SURFACE}" '
                 f'stroke="{SURFACE}" stroke-width="2"/>'
