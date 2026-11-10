@@ -156,7 +156,20 @@ def _substitute_vars(text: str, vars: dict[str, str]) -> str:
     return re.sub(r"\{\{\s*(\w+)\s*\}\}", replacer, text)
 
 
+def _substitute_vars_deep(obj, vars: dict[str, str]):
+    """Recursively substitute {{var}} in every string of a dict/list tree."""
+    if isinstance(obj, str):
+        return _substitute_vars(obj, vars) if "{{" in obj else obj
+    if isinstance(obj, dict):
+        return {k: _substitute_vars_deep(v, vars) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_substitute_vars_deep(v, vars) for v in obj]
+    return obj
+
+
 def _apply_vars_to_source(source: SourceConfig, vars: dict[str, str]) -> None:
+    if source.aggs:
+        source.aggs = _substitute_vars_deep(source.aggs, vars)
     if source.query:
         source.query = _substitute_vars(source.query, vars)
     if source.jql:

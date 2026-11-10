@@ -42,6 +42,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["grouped_bar_chart_svg"] = _filter_grouped_bar_chart_svg
     env.filters["stacked_bar_chart_svg"] = _filter_stacked_bar_chart_svg
     env.filters["sparkline"] = _filter_sparkline
+    env.filters["iso_week"] = _filter_iso_week
     return env
 
 
@@ -567,6 +568,27 @@ def _x_label(x: float, y: float, label: str, angle: float, fill: str) -> str:
         f'<text x="{x:.1f}" y="{y}" text-anchor="end" fill="{fill}" '
         f'transform="rotate(-{angle:g},{x:.1f},{y})">{_html.escape(label)}</text>'
     )
+
+
+def _filter_iso_week(value, fmt: str = "{year}-W{week:02d}") -> str:
+    """Convert a date (``YYYY-MM-DD...`` string or date) to its ISO week label.
+
+    ``"2026-11-09"`` -> ``"2026-W46"``. Uses the ISO week-numbering year, so
+    year boundaries are correct (``"2027-01-01"`` -> ``"2026-W53"``).
+    Unparseable values are returned unchanged.
+    """
+    from datetime import date, datetime
+
+    d = value
+    if isinstance(value, str):
+        try:
+            d = datetime.strptime(value[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return value
+    if not isinstance(d, date):
+        return str(value)
+    year, week, _ = d.isocalendar()
+    return fmt.format(year=year, week=week)
 
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"

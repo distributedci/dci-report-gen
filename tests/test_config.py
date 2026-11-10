@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from dci_report_gen.config import (
+    SourceConfig,
+    _apply_vars_to_source,
     _resolve_date_expr,
     _resolve_vars,
     _substitute_vars_expr,
@@ -177,3 +179,26 @@ class TestResolveVars:
         vars = {"date_start": "2024-06-01", "name": "test"}
         result = _resolve_vars(vars)
         assert result == {"date_start": "2024-06-01", "name": "test"}
+
+
+def test_vars_substituted_in_aggs():
+    src = SourceConfig(
+        type="dci",
+        query="created_at>='{{trend_start}}'",
+        aggs={
+            "week": {
+                "date_histogram": {
+                    "field": "created_at",
+                    "calendar_interval": "week",
+                    "extended_bounds": {"min": "{{trend_start}}", "max": "{{ date_end }}"},
+                },
+                "aggs": {"st": {"terms": {"field": "status", "size": 10}}},
+            },
+            "plat": {"terms": {"field": "tags", "include": ["a", "{{trend_start}}"]}},
+        },
+    )
+    _apply_vars_to_source(src, {"trend_start": "2026-08-31", "date_end": "2026-11-11"})
+    bounds = src.aggs["week"]["date_histogram"]["extended_bounds"]
+    assert bounds == {"min": "2026-08-31", "max": "2026-11-11"}
+    assert src.aggs["week"]["aggs"]["st"]["terms"]["size"] == 10  # non-str untouched
+    assert src.aggs["plat"]["terms"]["include"] == ["a", "2026-08-31"]

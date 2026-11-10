@@ -290,3 +290,13 @@ def test_sparkline_flat_and_empty():
     assert _filter_sparkline([5, 5]) == "▄▄"
     assert _filter_sparkline([]) == ""
     assert _filter_sparkline([None, None]) == "··"
+
+
+def test_iso_week():
+    from dci_report_gen.renderers.jinja import _filter_iso_week
+
+    assert _filter_iso_week("2026-11-09") == "2026-W46"
+    assert _filter_iso_week("2026-11-09T00:00:00.000Z") == "2026-W46"
+    assert _filter_iso_week("2027-01-01") == "2026-W53"
+    assert _filter_iso_week("2026-11-09", fmt="W{week}") == "W46"
+    assert _filter_iso_week("not-a-date") == "not-a-date"
