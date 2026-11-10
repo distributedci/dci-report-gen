@@ -186,3 +186,72 @@ def test_include_files_adds_fields_automatically(mock_ctx, mock_dci_job, mock_dc
     assert "files.id" in fields_str
     assert "files.name" in fields_str
     assert "id" in fields_str
+
+
+def _mock_page(jobs, total):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "hits": {
+            "hits": [{"_source": job} for job in jobs],
+            "total": {"value": total},
+        }
+    }
+    return resp
+
+
+@patch("dci_report_gen.fetchers.dci.dci_job")
+@patch("dci_report_gen.fetchers.dci._get_context")
+def test_search_paginates_beyond_server_page_cap(mock_ctx, mock_dci_job):
+    mock_ctx.return_value = MagicMock()
+    jobs = [{"id": f"job-{i}"} for i in range(450)]
+    mock_dci_job.search.side_effect = [
+        _mock_page(jobs[0:200], 450),
+        _mock_page(jobs[200:400], 450),
+        _mock_page(jobs[400:450], 450),
+    ]
+    source = SourceConfig(type="dci", query="q", fields=["id"], limit=500)
+
+    rows = DCIFetcher().fetch(source)
+
+    assert [r["id"] for r in rows] == [j["id"] for j in jobs]
+    offsets = [c.kwargs["offset"] for c in mock_dci_job.search.call_args_list]
+    limits = [c.kwargs["limit"] for c in mock_dci_job.search.call_args_list]
+    assert offsets == [0, 200, 400]
+    assert limits == [200, 200, 100]
+
+
+@patch("dci_report_gen.fetchers.dci.dci_job")
+@patch("dci_report_gen.fetchers.dci._get_context")
+def test_search_respects_limit_across_pages(mock_ctx, mock_dci_job):
+    mock_ctx.return_value = MagicMock()
+    jobs = [{"id": f"job-{i}"} for i in range(1000)]
+    mock_dci_job.search.side_effect = [
+        _mock_page(jobs[0:200], 1000),
+        _mock_page(jobs[200:250], 1000),
+    ]
+    source = SourceConfig(type="dci", query="q", fields=["id"], limit=250)
+
+    rows = DCIFetcher().fetch(source)
+
+    assert len(rows) == 250
+    assert mock_dci_job.search.call_count == 2
+
+
+@patch("dci_report_gen.fetchers.dci.dci_job")
+@patch("dci_report_gen.fetchers.dci._get_context")
+def test_search_with_aggs_is_single_call(mock_ctx, mock_dci_job):
+    mock_ctx.return_value = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"hits": {"hits": []}, "aggregations": {"x": {"buckets": []}}}
+    mock_dci_job.search.return_value = resp
+    source = SourceConfig(
+        type="dci", query="q", limit=1, aggs={"x": {"terms": {"field": "status"}}}, aggs_raw=True
+    )
+
+    rows = DCIFetcher().fetch(source)
+
+    assert rows == [{"x": {"buckets": []}}]
+    assert mock_dci_job.search.call_count == 1
+    assert "json-aggs" in mock_dci_job.search.call_args.kwargs
