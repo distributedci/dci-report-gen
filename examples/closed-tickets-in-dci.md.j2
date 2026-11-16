@@ -1,0 +1,65 @@
+# {{ title }}
+
+> **Reporting period:** {{ date_start }} — {{ date_end }}
+> **Report date:** {{ date }}
+
+{#- Both DCI sources are aggs_raw: a 1-element list holding the aggregations object -#}
+{% set wa_agg = workarounds[0] if workarounds else {} %}
+{% set wa_buckets = wa_agg.get("by_ticket", {}).get("buckets", []) %}
+{% set tt_agg = test_tickets[0] if test_tickets else {} %}
+{% set tt_buckets = tt_agg.get("tests", {}).get("suites", {}).get("cases", {}).get("props", {}).get("ticket", {}).get("by_ticket", {}).get("buckets", []) %}
+
+{#- Jira lookups (closed tickets only) keyed by ticket key -#}
+{% set closed_wa = {} %}
+{% for t in closed_workaround_tickets %}{% set _ = closed_wa.update({t.key: t}) %}{% endfor %}
+{% set closed_tt = {} %}
+{% for t in closed_test_tickets %}{% set _ = closed_tt.update({t.key: t}) %}{% endfor %}
+
+{% set wa_rows = wa_buckets | selectattr("key", "in", closed_wa) | list %}
+{% set tt_rows = tt_buckets | selectattr("key", "in", closed_tt) | list %}
+
+## Summary
+
+| Metric | Value |
+| ------ | ----- |
+| Workaround tickets referenced by DCI jobs | {{ wa_buckets | length }} |
+| … of which closed in Jira | **{{ wa_rows | length }}** |
+| Test `ticket` properties referenced by DCI jobs | {{ tt_buckets | length }} |
+| … of which closed in Jira | **{{ tt_rows | length }}** |
+
+## Closed workaround tickets
+
+Jira tickets that are closed but still tagged on DCI jobs applying a workaround (`workarounds` ≥ 1) during the period. The workaround is likely no longer needed and can be removed.
+
+{% if wa_rows %}
+| Ticket | Summary | Status (Resolution) | Resolved | Jobs | Last Seen | Labs |
+| ------ | ------- | ------------------- | -------- | ---- | --------- | ---- |
+{% for b in wa_rows | sort(attribute="doc_count", reverse=true) %}
+{%   set t = closed_wa[b.key] %}
+{%   set labs = b.get("labs", {}).get("names", {}).get("buckets", []) | map(attribute="key") | join(", ") %}
+| {{ b.key | jira_link }} | {{ t.summary | truncate(60) | md_cell }} | {{ t.status }}{% if t.resolution %} ({{ t.resolution }}){% endif %} | {{ (t.resolutiondate or "")[:10] }} | {{ b.doc_count }} | {{ (b.get("last_seen", {}).get("value_as_string") or "")[:10] }} | {{ labs | md_cell }} |
+{% endfor %}
+{% else %}
+_No closed workaround tickets referenced during the period._
+{% endif %}
+
+## Closed bugs still referenced by tests
+
+Jira tickets that are closed but still referenced by a testcase `ticket` property in DCI jobs during the period. The test property should be removed, or the bug reopened if the test still fails.
+
+{% if tt_rows %}
+| Ticket | Summary | Status (Resolution) | Resolved | Jobs | Last Seen | Test Results | Tests | Labs |
+| ------ | ------- | ------------------- | -------- | ---- | --------- | ------------ | ----- | ---- |
+{% for b in tt_rows | sort(attribute="job.doc_count", reverse=true) %}
+{%   set t = closed_tt[b.key] %}
+{%   set tc = b.get("testcase", {}) %}
+{%   set actions = tc.get("actions", {}).get("buckets", []) %}
+{%   set results = [] %}
+{%   for a in actions %}{% set _ = results.append(a.key ~ ": " ~ a.doc_count) %}{% endfor %}
+{%   set tests = tc.get("names", {}).get("buckets", []) | map(attribute="key") | join("; ") %}
+{%   set labs = b.job.get("labs", {}).get("names", {}).get("buckets", []) | map(attribute="key") | join(", ") %}
+| {{ b.key | jira_link }} | {{ t.summary | truncate(60) | md_cell }} | {{ t.status }}{% if t.resolution %} ({{ t.resolution }}){% endif %} | {{ (t.resolutiondate or "")[:10] }} | {{ b.job.doc_count }} | {{ (b.job.get("last_seen", {}).get("value_as_string") or "")[:10] }} | {{ results | join(", ") }} | {{ tests | truncate(80) | md_cell }} | {{ labs | md_cell }} |
+{% endfor %}
+{% else %}
+_No closed bugs referenced by test properties during the period._
+{% endif %}

@@ -300,6 +300,17 @@ dci-report-gen examples/partner-snapshot.yaml -o snapshot.md --var team=SamsungR
 
 Rates with nothing to divide by are shown as `n/a`, topics without any finished job as `—`, and volume variations are flagged as not significant when the baseline averages fewer than `min_jobs` (default 5) jobs per week.
 
+### Closed tickets still referenced in DCI
+
+Lists Jira tickets that are closed but still referenced by DCI jobs during the period: workaround tickets tagged on jobs with the `workarounds` key/value ≥ 1, and bugs referenced by a testcase `<property name="ticket">`. Two DCI aggregations collect the keys (any Jira project), then two Jira sources keep only `statusCategory = Done`. Defaults to the last 30 days:
+
+```bash
+dci-report-gen examples/closed-tickets-in-dci.yaml -o closed-tickets.md
+
+dci-report-gen examples/closed-tickets-in-dci.yaml -o closed-tickets.md \
+  --var date_start=2026-10-01 --var date_end=2026-10-31
+```
+
 ### Using a predefined template
 
 ```yaml
