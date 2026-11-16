@@ -117,6 +117,8 @@ data:
 
 The engine fetches all named data sources, then passes them as context variables to the Jinja2 template.
 
+Var values can use relative date expressions: `{today}` and `{monday}` (Monday of the current ISO week), each with an optional day offset such as `{today-7d}` or `{monday-91d}`. Vars can reference other vars (`{{days}}`, `{{days*2}}`) and be overridden on the command line with `--var key=value`.
+
 ### Data sources
 
 Each entry in the `data` block defines a named data source.
@@ -276,6 +278,22 @@ dci-report-gen examples/ticket-priority.yaml -o ticket-priority.md \
   --var project=CNF --var lookback_days=30
 ```
 
+### Partner weekly snapshot
+
+One-page weekly summary of a DCI partner team for management: weather status (🟢 ≥ 80% / 🟡 ≥ 50% / 🔴 job success rate), KPIs vs the 12-week average, remoteci × topic scope with main OCP version and last success, test statistics with top failing testcases, a 13-week stacked bar chart and points of attention (failing jobs, failure reasons, at-risk topics). All counting is done server-side with ElasticSearch aggregations. The reporting week is the last complete ISO week (Mon → Sun), whatever the day the report runs:
+
+```bash
+dci-report-gen examples/partner-snapshot.yaml -o snapshot.pdf \
+  --var team=SamsungRAN --var "partner=Samsung RAN" \
+  --var journal_url=https://docs.google.com/document/d/...
+
+# Another week:
+dci-report-gen examples/partner-snapshot.yaml -o snapshot.pdf --var team=SamsungRAN \
+  --var date_end=2026-11-16 --var week_start=2026-11-09 --var trend_start=2026-08-17
+```
+
+Rates with nothing to divide by are shown as `n/a`, topics without any finished job as `—`, and volume variations are flagged as not significant when the baseline averages fewer than `min_jobs` (default 5) jobs per week.
+
 ### Using a predefined template
 
 ```yaml
@@ -394,6 +412,8 @@ examples/
 ├── jira-backlog-trend.md.j2
 ├── ticket-priority.yaml          # Rank tickets by failing-daily-job footprint
 ├── ticket-priority.md.j2
+├── partner-snapshot.yaml         # One-page weekly snapshot of a partner team
+├── partner-snapshot.md.j2
 └── use-template.yaml             # Predefined template usage
 ```
 

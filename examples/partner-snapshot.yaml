@@ -1,0 +1,200 @@
+description: "DCI Partner Snapshot — one-page weekly activity summary for a partner team"
+
+# Usage:
+#   dci-report-gen examples/partner-snapshot.yaml -o snapshot.pdf \
+#     --var team=SamsungRAN --var "partner=Samsung RAN" \
+#     --var journal_url=https://docs.google.com/document/d/...
+#
+# Variables:
+#   team         DCI team name (required)
+#   partner      Display name in the title (defaults to the team name)
+#   journal_url  Optional link to the partner activity journal
+#   min_jobs     Below this number of finished jobs, success rates and
+#                volume variations are flagged as "low volume" (default 5)
+#
+# Windows (all dates UTC, end bound excluded):
+#   week   = [week_start, date_end)  → last complete ISO week (Mon → Sun)
+#   trend  = [trend_start, date_end) → 13 ISO weeks = 12-week baseline + reporting week
+#
+# Defaults are anchored on the Monday of the current ISO week, so the report
+# always covers the last complete week whatever the day it runs. To report on
+# another week, pass the three dates explicitly, e.g.:
+#   --var date_end=2026-11-16 --var week_start=2026-11-09 --var trend_start=2026-08-17
+#
+# Weather (job success rate of the reporting week):
+#   🟢 >= 80%  ·  🟡 >= 50%  ·  🔴 < 50%  ·  ⚪ no job
+#
+# Test statistics exclude the agent "wrapper" junit files (dci-openshift-agent,
+# dci-openshift-app-agent) and poweroff-nodes (empty junit).
+#
+# NOTE: DCI sends aggregations as a GET query parameter (~4 KB max once
+# URL-encoded), so the analysis is split into small data sources.
+
+vars:
+  team: ""
+  partner: "{{team}}"
+  journal_url: ""
+  min_jobs: "5"
+  date_end: "{monday}"
+  week_start: "{monday-7d}"
+  trend_start: "{monday-91d}"
+
+report:
+  title: "DCI Partner Snapshot"
+  date: auto
+  layout: partner-snapshot.md.j2
+
+data:
+  # ── Reporting week: KPIs ──────────────────────────────────────────
+  week_kpi:
+    type: dci
+    query: "((team.name='{{team}}') and (created_at>='{{week_start}}') and (created_at<'{{date_end}}'))"
+    fields: ["id"]
+    limit: 1
+    aggs_raw: true
+    aggs:
+      by_status:
+        terms: {field: "status", size: 10}
+      dur:
+        sum: {field: "duration"}
+      daily:
+        filter: {term: {tags: "daily"}}
+      rcs:
+        nested: {path: "remoteci"}
+        aggs:
+          n: {cardinality: {field: "remoteci.name"}}
+      pipes:
+        nested: {path: "pipeline"}
+        aggs:
+          n: {cardinality: {field: "pipeline.name"}}
+      bad:
+        filter: {terms: {status: ["failure", "error"]}}
+        aggs:
+          jobs:
+            terms: {field: "name", size: 5}
+          reasons:
+            terms: {field: "status_reason", size: 3}
+
+  # ── Reporting week: scope (remoteci × topic) ──────────────────────
+  week_scope:
+    type: dci
+    query: "((team.name='{{team}}') and (created_at>='{{week_start}}') and (created_at<'{{date_end}}'))"
+    fields: ["id"]
+    limit: 1
+    aggs_raw: true
+    aggs:
+      rc:
+        nested: {path: "remoteci"}
+        aggs:
+          by:
+            terms: {field: "remoteci.name", size: 5}
+            aggs:
+              up:
+                reverse_nested: {}
+                aggs:
+                  tp:
+                    nested: {path: "topic"}
+                    aggs:
+                      by:
+                        terms: {field: "topic.name", size: 6}
+                        aggs:
+                          up:
+                            reverse_nested: {}
+                            aggs:
+                              st:
+                                terms: {field: "status", size: 8}
+                              ok:
+                                filter: {term: {status: "success"}}
+                                aggs:
+                                  last: {max: {field: "created_at"}}
+                              cmp:
+                                nested: {path: "components"}
+                                aggs:
+                                  ocp:
+                                    filter: {term: {components.type: "ocp"}}
+                                    aggs:
+                                      v: {terms: {field: "components.version", size: 3}}
+
+  # ── Reporting week: test results ──────────────────────────────────
+  week_tests:
+    type: dci
+    query: "((team.name='{{team}}') and (created_at>='{{week_start}}') and (created_at<'{{date_end}}'))"
+    fields: ["id"]
+    limit: 1
+    aggs_raw: true
+    aggs:
+      t:
+        nested: {path: "tests"}
+        aggs:
+          na:
+            filter:
+              bool:
+                must_not:
+                  - prefix: {tests.name: "dci-openshift-agent"}
+                  - prefix: {tests.name: "dci-openshift-app-agent"}
+                  - prefix: {tests.name: "poweroff-nodes"}
+            aggs:
+              files:
+                terms: {field: "tests.name", size: 8}
+              s:
+                nested: {path: "tests.testsuites"}
+                aggs:
+                  c:
+                    nested: {path: "tests.testsuites.testcases"}
+                    aggs:
+                      act:
+                        terms: {field: "tests.testsuites.testcases.action", size: 6}
+                      ko:
+                        filter: {terms: {tests.testsuites.testcases.action: ["failure", "error"]}}
+                        aggs:
+                          names:
+                            terms: {field: "tests.testsuites.testcases.name", size: 5}
+                            aggs:
+                              jobs: {reverse_nested: {}}
+
+  # ── Reporting week: latest failed jobs (for links) ────────────────
+  week_failed:
+    type: dci
+    query: "((team.name='{{team}}') and (created_at>='{{week_start}}') and (created_at<'{{date_end}}') and ((status='failure') or (status='error')))"
+    fields: ["id", "name", "status", "status_reason", "created_at", "topic.name"]
+    limit: 5
+    sort: "-created_at"
+
+  # ── 13-week trend (12-week baseline + reporting week) ─────────────
+  trend:
+    type: dci
+    query: "((team.name='{{team}}') and (created_at>='{{trend_start}}') and (created_at<'{{date_end}}'))"
+    fields: ["id"]
+    limit: 1
+    aggs_raw: true
+    aggs:
+      weeks:
+        date_histogram:
+          field: "created_at"
+          calendar_interval: "week"
+          min_doc_count: 0
+          extended_bounds: {min: "{{trend_start}}", max: "{{week_start}}"}
+        aggs:
+          st:
+            terms: {field: "status", size: 8}
+          dur:
+            sum: {field: "duration"}
+          t:
+            nested: {path: "tests"}
+            aggs:
+              na:
+                filter:
+                  bool:
+                    must_not:
+                      - prefix: {tests.name: "dci-openshift-agent"}
+                      - prefix: {tests.name: "dci-openshift-app-agent"}
+                      - prefix: {tests.name: "poweroff-nodes"}
+                aggs:
+                  s:
+                    nested: {path: "tests.testsuites"}
+                    aggs:
+                      c:
+                        nested: {path: "tests.testsuites.testcases"}
+                        aggs:
+                          act:
+                            terms: {field: "tests.testsuites.testcases.action", size: 6}

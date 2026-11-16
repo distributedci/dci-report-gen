@@ -1,0 +1,213 @@
+{# ═══════════════════════════════════════════════════════════════════ #}
+{# DCI Partner Snapshot — one page per partner team                     #}
+{# Reporting week = [week_start, date_end) · baseline = 12 previous wks #}
+{# Rates are `none` (rendered "n/a") when there is nothing to divide by. #}
+{# ═══════════════════════════════════════════════════════════════════ #}
+<style>
+@page { size: A4; margin: 10mm 12mm; }
+body { font-size: 8.5pt; line-height: 1.25; }
+h1 { font-size: 15pt; margin: 0 0 2mm 0; padding-bottom: 1mm; }
+h2 { font-size: 11pt; margin: 3mm 0 1mm 0; }
+p, ul { margin: 1mm 0; }
+li { margin: 0; }
+table { margin: 1mm 0 2mm 0; font-size: 8pt; }
+thead th { padding: 1mm 1.5mm; }
+tbody td { padding: 0.8mm 1.5mm; }
+svg { max-height: 62mm; }
+</style>
+
+{# ── Helpers ───────────────────────────────────────────────────────── #}
+{% set min_jobs = (min_jobs | default(5)) | int %}
+{% macro ratio(n, d) -%}{{ ((n / d * 100) | round(1)) ~ '%' if d else 'n/a' }}{%- endmacro %}
+{% macro fmt_rate(r) -%}{{ (r | round(1)) ~ '%' if r is not none else 'n/a' }}{%- endmacro %}
+{% macro light(ok, fin) -%}
+{%- if not fin %}—{% elif ok / fin >= 0.8 %}🟢{% elif ok / fin >= 0.5 %}🟡{% else %}🔴{% endif -%}
+{%- endmacro %}
+{% macro delta(cur, ref, unit='', digits=0) -%}
+{%- set d = cur - ref -%}
+{%- if d > 0 %}▲ +{{ d | round(digits) | int if digits == 0 else d | round(digits) }}{{ unit }}
+{%- elif d < 0 %}▼ {{ d | round(digits) | int if digits == 0 else d | round(digits) }}{{ unit }}
+{%- else %}= {{ unit and ('0' ~ unit) or '0' }}{% endif -%}
+{%- endmacro %}
+{% macro short_ver(v) -%}
+{%- if '-0.nightly-' in v %}{{ v.split('-0.nightly-')[0] }} nightly {{ v.split('-0.nightly-')[1][5:10] }}{% else %}{{ v }}{% endif -%}
+{%- endmacro %}
+{% macro status_counts(buckets) -%}
+{%- set s = namespace(success=0, failure=0, error=0, killed=0, other=0) -%}
+{%- for b in buckets -%}
+{%- if b.key == 'success' %}{% set s.success = b.doc_count -%}
+{%- elif b.key == 'failure' %}{% set s.failure = b.doc_count -%}
+{%- elif b.key == 'error' %}{% set s.error = b.doc_count -%}
+{%- elif b.key == 'killed' %}{% set s.killed = b.doc_count -%}
+{%- else %}{% set s.other = s.other + b.doc_count %}{% endif -%}
+{%- endfor -%}
+{{ s.success }},{{ s.failure }},{{ s.error }},{{ s.killed }},{{ s.other }}
+{%- endmacro %}
+{% macro tc_counts(buckets) -%}
+{%- set s = namespace(success=0, failure=0, skipped=0) -%}
+{%- for b in buckets -%}
+{%- if b.key == 'success' %}{% set s.success = s.success + b.doc_count -%}
+{%- elif b.key in ['failure', 'error'] %}{% set s.failure = s.failure + b.doc_count -%}
+{%- else %}{% set s.skipped = s.skipped + b.doc_count %}{% endif -%}
+{%- endfor -%}
+{{ s.success }},{{ s.failure }},{{ s.skipped }}
+{%- endmacro %}
+
+{# ── Weekly series (13 weeks, last one = reporting week) ───────────── #}
+{% set rows = [] %}
+{% for w in trend[0].weeks.buckets %}
+{% set c = status_counts(w.st.buckets).split(',') | map('int') | list %}
+{% set t = tc_counts(w.t.na.s.c.act.buckets).split(',') | map('int') | list %}
+{% set fin = c[0] + c[1] + c[2] %}
+{% set _ = rows.append({
+    "label": w.key_as_string | iso_week("W{week:02d}"),
+    "monday": w.key_as_string[:10],
+    "jobs": w.doc_count,
+    "success": c[0], "failure": c[1], "error": c[2], "killed": c[3], "other": c[4],
+    "finished": fin,
+    "rate": ((c[0] / fin * 100) | round(1)) if fin else none,
+    "hours": ((w.dur.value or 0) / 3600) | round(0) | int,
+    "tc_ok": t[0], "tc_ko": t[1], "tc_skip": t[2],
+    "tc_rate": ((t[0] / (t[0] + t[1]) * 100) | round(1)) if (t[0] + t[1]) else none,
+}) %}
+{% endfor %}
+{% set cur = rows[-1] if rows else none %}
+{% set base = rows[:-1] %}
+{% set nb = base | length %}
+
+{# ── Baseline (12 previous weeks) averages ─────────────────────────── #}
+{% set b = namespace(jobs=0, success=0, fin=0, hours=0, tc_ok=0, tc_ko=0, tc=0) %}
+{% for r in base %}
+{% set b.jobs = b.jobs + r.jobs %}{% set b.success = b.success + r.success %}
+{% set b.fin = b.fin + r.finished %}{% set b.hours = b.hours + r.hours %}
+{% set b.tc_ok = b.tc_ok + r.tc_ok %}{% set b.tc_ko = b.tc_ko + r.tc_ko %}
+{% set b.tc = b.tc + r.tc_ok + r.tc_ko + r.tc_skip %}
+{% endfor %}
+{% set avg_jobs = (b.jobs / nb) if nb else 0 %}
+{% set avg_hours = (b.hours / nb) if nb else 0 %}
+{% set avg_tc = (b.tc / nb) if nb else 0 %}
+{% set base_rate = (b.success / b.fin * 100) if b.fin else none %}
+{% set base_tc_rate = (b.tc_ok / (b.tc_ok + b.tc_ko) * 100) if (b.tc_ok + b.tc_ko) else none %}
+
+{# ── Reporting week KPIs ───────────────────────────────────────────── #}
+{% set k = week_kpi[0] %}
+{% set c = status_counts(k.by_status.buckets).split(',') | map('int') | list %}
+{% set jobs = k.by_status.buckets | sum(attribute='doc_count') %}
+{% set fin = c[0] + c[1] + c[2] %}
+{% set rate = (c[0] / fin * 100) if fin else none %}
+{% set hours = ((k.dur.value or 0) / 3600) | round(0) | int %}
+{% set tst = week_tests[0].t.na %}
+{% set tc = tc_counts(tst.s.c.act.buckets).split(',') | map('int') | list %}
+{% set tc_total = tc[0] + tc[1] + tc[2] %}
+{% set tc_rate = (tc[0] / (tc[0] + tc[1]) * 100) if (tc[0] + tc[1]) else none %}
+{% set low_volume = fin < min_jobs %}
+
+{# ── Weather ───────────────────────────────────────────────────────── #}
+{% if jobs == 0 %}{% set weather = "⚪ No activity" %}
+{% elif rate is none %}{% set weather = "⏳ No finished job" %}
+{% elif rate >= 80 %}{% set weather = "🟢 Healthy" %}
+{% elif rate >= 50 %}{% set weather = "🟡 Watch" %}
+{% else %}{% set weather = "🔴 At risk" %}{% endif %}
+{% if low_volume and rate is not none %}{% set weather = weather ~ " (low volume)" %}{% endif %}
+
+# 📄 {{ partner or team }} — DCI Weekly Snapshot
+
+{% if not team %}
+> ⚠️ **No DCI team set** — pass `--var team=<DCI team name>`.
+{% endif %}
+
+**Team:** `{{ team }}` · **Week:** {{ cur.label if cur else '' }} ({{ week_start }} → {{ date_end }}, excl.) ·
+**Remotecis:** {{ k.rcs.n.value }} · **Pipelines:** {{ k.pipes.n.value }} · **Status:** **{{ weather }}** ·
+{% if journal_url %}[📓 Activity journal]({{ journal_url }}) · {% endif %}_Generated {{ date }}_
+
+## 📊 Key figures — vs 12-week average
+
+| Jobs | ✅ Success | ❌ Failure | ⚠️ Error | ⏳ Other | Job success rate | 🧪 Testcases | Test pass rate | ⏱️ Machine hours |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **{{ jobs }}** | {{ c[0] }} | {{ c[1] }} | {{ c[2] }} | {{ c[3] + c[4] }} | **{{ fmt_rate(rate) }}** | {{ tc_total }} | **{{ fmt_rate(tc_rate) }}** | {{ hours }} h |
+| _avg {{ avg_jobs | round(0) | int }}_<br>{{ delta(jobs, avg_jobs) }} | | | | | _avg {{ fmt_rate(base_rate) }}_{% if rate is not none and base_rate is not none %}<br>{{ delta(rate, base_rate, ' pts', 1) }}{% endif %} | _avg {{ avg_tc | round(0) | int }}_<br>{{ delta(tc_total, avg_tc) }} | _avg {{ fmt_rate(base_tc_rate) }}_{% if tc_rate is not none and base_tc_rate is not none %}<br>{{ delta(tc_rate, base_tc_rate, ' pts', 1) }}{% endif %} | _avg {{ avg_hours | round(0) | int }} h_<br>{{ delta(hours, avg_hours, ' h') }} |
+
+**13-week trend** — Jobs `{{ rows | map(attribute='jobs') | list | sparkline(lo=0) }}` ·
+Job success `{{ rows | map(attribute='rate') | list | sparkline(lo=0, hi=100) }}` ·
+Test pass `{{ rows | map(attribute='tc_rate') | list | sparkline(lo=0, hi=100) }}`
+{% set vol = ((jobs - avg_jobs) / avg_jobs * 100) if avg_jobs else 0 %}
+
+{% if avg_jobs < min_jobs %}
+> 💬 **Low volume baseline** ({{ jobs }} job(s) this week vs {{ avg_jobs | round(1) }} on average): variations are not significant.
+{% else %}
+> 💬 Volume is **{{ 'stable' if vol | abs < 15 else ('up ' ~ (vol | round(0) | int) ~ '%' if vol > 0 else 'down ' ~ (vol | abs | round(0) | int) ~ '%') }}**
+> vs the 12-week average ({{ jobs }} vs {{ avg_jobs | round(0) | int }} jobs).
+{% endif %}
+{% if rate is not none and base_rate is not none %}
+> Job success rate is **{{ 'in line with' if (rate - base_rate) | abs < 3 else ('above' if rate > base_rate else 'below') }}** the baseline
+> ({{ fmt_rate(rate) }} vs {{ fmt_rate(base_rate) }}){% if low_volume %}, on only {{ fin }} finished job(s){% endif %}.
+{% endif %}
+> Test pass rate is **{{ fmt_rate(tc_rate) }}**{% if tc_rate is none %} (no testcase with a pass/fail result){% endif %}.
+
+## 🎯 Scope tested
+
+| Remoteci | Topic | Jobs | ✅ | ❌ | Success | Main OCP version | Last success |
+|---|---|---:|---:|---:|---:|---|---|
+{% for r in week_scope[0].rc.by.buckets %}
+{% for tp in r.up.tp.by.buckets %}
+{% set s = status_counts(tp.up.st.buckets).split(',') | map('int') | list %}
+{% set vs = tp.up.cmp.ocp.v.buckets %}
+{% set nver = (vs | length) + (1 if tp.up.cmp.ocp.v.sum_other_doc_count else 0) %}
+{% set tfin = s[0] + s[1] + s[2] %}
+| {{ r.key if loop.first else '' }} | {{ tp.key }} | {{ tp.doc_count }} | {{ s[0] }} | {{ s[1] + s[2] }} | {{ (ratio(s[0], tfin) ~ ' ' ~ light(s[0], tfin)) if tfin else '—' }} | {{ short_ver(vs[0].key) if vs else 'n/a' }}{% if nver > 1 %} _(+{{ nver - 1 }} more)_{% endif %} | {{ tp.up.ok['last'].value_as_string[:10] if tp.up.ok.doc_count else '—' }} |
+{% endfor %}
+{% endfor %}
+
+## 🧪 Tests
+
+**{{ tc_total }}** testcases ({{ tc[0] }} ✅ · {{ tc[1] }} ❌ · {{ tc[2] }} ⏭️ skipped) across **{{ tst.doc_count }}** junit files.
+Main suites: {% for f in tst.files.buckets %}`{{ f.key }}`{% if not loop.last %}, {% endif %}{% endfor %}{% if tst.files.sum_other_doc_count %} …{% endif %}
+
+{% if tst.s.c.ko.names.buckets %}
+| Top failing testcases | Failures | Jobs |
+|---|---:|---:|
+{% for n in tst.s.c.ko.names.buckets %}
+| {{ (n.key[:90] ~ ('…' if n.key | length > 90 else '')) | md_cell }} | {{ n.doc_count }} | {{ n.jobs.doc_count }} |
+{% endfor %}
+{% else %}
+✅ No failing testcase this week.
+{% endif %}
+
+## 📈 12-week trend
+
+{{ rows | stacked_bar_chart_svg([
+    {"key": "success", "label": "Success", "color": "#1baf7a"},
+    {"key": "failure", "label": "Failure", "color": "#e34948"},
+    {"key": "error", "label": "Error", "color": "#eda100"},
+    {"key": "killed", "label": "Killed", "color": "#7d7d7d"},
+    {"key": "other", "label": "Other", "color": "#c9c9c9"},
+], "Jobs per week by status — " ~ team, label_angle=0) }}
+
+## ⚠️ Points of attention
+
+{% set bad = k.bad %}
+{% if bad.doc_count %}
+- **Most failing jobs:** {% for j in bad.jobs.buckets %}`{{ j.key }}` ({{ j.doc_count }}){% if not loop.last %}, {% endif %}{% endfor +%}
+{% set reasons = bad.reasons.buckets | selectattr("key") | list %}
+{% set no_reason = bad.reasons.buckets | rejectattr("key") | sum(attribute="doc_count") %}
+- **Top failure reasons:** {% for r in reasons %}_{{ r.key | md_cell }}_ ({{ r.doc_count }}){% if not loop.last %} · {% endif %}{% endfor %}{% if no_reason > 0 %}{% if reasons %} · {% endif %}_no status_reason set_ ({{ no_reason }}){% endif +%}
+{% endif %}
+{% for r in week_scope[0].rc.by.buckets %}{% for tp in r.up.tp.by.buckets %}
+{% set s = status_counts(tp.up.st.buckets).split(',') | map('int') | list %}
+{% if (s[0] + s[1] + s[2]) >= 3 and s[0] / (s[0] + s[1] + s[2]) < 0.5 %}
+- 🔴 **{{ tp.key }}** on `{{ r.key }}`: only {{ s[0] }}/{{ s[0] + s[1] + s[2] }} successful jobs.
+{% endif %}
+{% endfor %}{% endfor %}
+{% if c[4] %}
+- ⏳ {{ c[4] }} job(s) still `new`/`running` (never started or in progress).
+{% endif %}
+{% if not bad.doc_count %}
+- ✅ No failed job this week.
+{% endif %}
+
+{% if week_failed %}
+**Latest failed jobs:** {% for j in week_failed %}{{ j.id | dci_link }} `{{ j.name }}` ({{ j['topic.name'] }}){% if not loop.last %} · {% endif %}{% endfor %}
+{% endif %}
+
+<small>Success rate = success / (success + failure + error). Test stats exclude agent wrapper junits and poweroff-nodes.
+Source: DCI Elasticsearch · [dci-report-gen](https://github.com/distributedci/dci-report-gen)</small>
