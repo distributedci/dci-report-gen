@@ -111,6 +111,23 @@ class TestResolveDateExpr:
         mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
         assert _resolve_date_expr("{today+3d}") == "2026-09-12"
 
+    @patch("dci_report_gen.config.date")
+    def test_monday_midweek(self, mock_date):
+        # 2026-09-09 is a Wednesday
+        mock_date.today.return_value = date(2026, 9, 9)
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        assert _resolve_date_expr("{monday}") == "2026-09-07"
+        assert _resolve_date_expr("{monday-7d}") == "2026-08-31"
+        assert _resolve_date_expr("{monday+6d}") == "2026-09-13"
+
+    @patch("dci_report_gen.config.date")
+    def test_monday_on_monday_and_sunday(self, mock_date):
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        mock_date.today.return_value = date(2026, 9, 7)  # Monday
+        assert _resolve_date_expr("{monday}") == "2026-09-07"
+        mock_date.today.return_value = date(2026, 9, 13)  # Sunday
+        assert _resolve_date_expr("{monday}") == "2026-09-07"
+
     def test_no_expression(self):
         assert _resolve_date_expr("plain text") == "plain text"
         assert _resolve_date_expr("2026-01-01") == "2026-01-01"

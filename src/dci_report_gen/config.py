@@ -65,20 +65,24 @@ class ReportConfig:
 
 
 def _resolve_date_expr(text: str) -> str:
-    """Resolve date expressions: {today}, {today-Nd}, {today+Nd}."""
+    """Resolve date expressions relative to a base date.
+
+    Bases: ``today`` and ``monday`` (Monday of the current ISO week, i.e.
+    today when run on a Monday). Each accepts an optional day offset:
+    ``{today}``, ``{today-Nd}``, ``{today+Nd}``, ``{monday}``,
+    ``{monday-Nd}``, ``{monday+Nd}``.
+    """
 
     def replacer(match: re.Match) -> str:
-        expr = match.group(1)
-        if expr == "today":
-            return date.today().isoformat()
-        m = re.match(r"today([+-])(\d+)d", expr)
-        if m:
-            sign = 1 if m.group(1) == "+" else -1
-            days = int(m.group(2))
-            return (date.today() + timedelta(days=sign * days)).isoformat()
-        raise ValueError(f"Unknown date expression: {{{expr}}}")
+        base_name, sign, days = match.group(1), match.group(2), match.group(3)
+        base = date.today()
+        if base_name == "monday":
+            base -= timedelta(days=base.weekday())
+        if sign:
+            base += timedelta(days=(1 if sign == "+" else -1) * int(days))
+        return base.isoformat()
 
-    return re.sub(r"\{(today(?:[+-]\d+d)?)\}", replacer, text)
+    return re.sub(r"\{(today|monday)(?:([+-])(\d+)d)?\}", replacer, text)
 
 
 def _substitute_vars_expr(text: str, vars: dict[str, str]) -> str:
@@ -122,7 +126,7 @@ def _resolve_vars(vars: dict[str, str]) -> dict[str, str]:
     Processing order:
     1. Collect literal vars (no {{}} references)
     2. Resolve {{var}} and {{var*N}} references using literals
-    3. Resolve {today}, {today-Nd}, {today+Nd} date expressions
+    3. Resolve {today|monday}[+-Nd] date expressions
     """
     str_vars = {k: str(v) for k, v in vars.items()}
 
