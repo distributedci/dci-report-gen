@@ -43,6 +43,7 @@ def _build_env(search_paths: list[str | Path]) -> Environment:
     env.filters["stacked_bar_chart_svg"] = _filter_stacked_bar_chart_svg
     env.filters["sparkline"] = _filter_sparkline
     env.filters["iso_week"] = _filter_iso_week
+    env.filters["add_days"] = _filter_add_days
     return env
 
 
@@ -589,6 +590,25 @@ def _filter_iso_week(value, fmt: str = "{year}-W{week:02d}") -> str:
         return str(value)
     year, week, _ = d.isocalendar()
     return fmt.format(year=year, week=week)
+
+
+def _filter_add_days(value, days: int = 0, fmt: str = "%Y-%m-%d") -> str:
+    """Shift a date (``YYYY-MM-DD...`` string or date) by ``days`` and format it.
+
+    ``"2026-11-12" | add_days(7, "%d/%m")`` -> ``"19/11"``. Unparseable values
+    are returned unchanged.
+    """
+    from datetime import date, datetime, timedelta
+
+    d = value
+    if isinstance(value, str):
+        try:
+            d = datetime.strptime(value[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return value
+    if not isinstance(d, date):
+        return str(value)
+    return (d + timedelta(days=int(days))).strftime(fmt)
 
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"

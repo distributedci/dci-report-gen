@@ -1,6 +1,7 @@
 {# ═══════════════════════════════════════════════════════════════════ #}
 {# DCI Partner Snapshot — one page per partner team                     #}
 {# Reporting week = [week_start, date_end) · baseline = 12 previous wks #}
+{# Weeks are 7-day buckets aligned on the `anchor` weekday (week_offset) #}
 {# Rates are `none` (rendered "n/a") when there is nothing to divide by. #}
 {# ═══════════════════════════════════════════════════════════════════ #}
 <style>
@@ -60,8 +61,8 @@ svg { max-height: 62mm; }
 {% set t = tc_counts(w.t.na.s.c.act.buckets).split(',') | map('int') | list %}
 {% set fin = c[0] + c[1] + c[2] %}
 {% set _ = rows.append({
-    "label": w.key_as_string | iso_week("W{week:02d}"),
-    "monday": w.key_as_string[:10],
+    "label": (w.key_as_string | add_days(0, "%d/%m")) ~ "→" ~ (w.key_as_string | add_days(7, "%d/%m")),
+    "start": w.key_as_string[:10],
     "jobs": w.doc_count,
     "success": c[0], "failure": c[1], "error": c[2], "killed": c[3], "other": c[4],
     "finished": fin,
@@ -116,7 +117,11 @@ svg { max-height: 62mm; }
 > ⚠️ **No DCI team set** — pass `--var team=<DCI team name>`.
 {% endif %}
 
-**Team:** `{{ team }}` · **Week:** {{ cur.label if cur else '' }} ({{ week_start }} → {{ date_end }}, excl.) ·
+{% if cur and cur.start != week_start %}
+> ⚠️ **Weekly buckets misaligned** (last bucket starts {{ cur.start }}, expected {{ week_start }}): check that `week_offset` matches `anchor={{ anchor | default('monday') }}`.
+{% endif %}
+
+**Team:** `{{ team }}` · **Week:** {{ week_start | add_days(0, "%a %d %b") }} → {{ date_end | add_days(0, "%a %d %b %Y") }} (00:00 UTC, end excl.) ·
 **Remotecis:** {{ k.rcs.n.value }} · **Pipelines:** {{ k.pipes.n.value }} · **Status:** **{{ weather }}** ·
 {% if journal_url %}[📓 Activity journal]({{ journal_url }}) · {% endif %}_Generated {{ date }}_
 
@@ -181,7 +186,7 @@ Main suites: {% for f in tst.files.buckets %}`{{ f.key }}`{% if not loop.last %}
     {"key": "error", "label": "Error", "color": "#eda100"},
     {"key": "killed", "label": "Killed", "color": "#7d7d7d"},
     {"key": "other", "label": "Other", "color": "#c9c9c9"},
-], "Jobs per week by status — " ~ team, label_angle=0) }}
+], "Jobs per week by status — " ~ team) }}
 
 ## ⚠️ Points of attention
 

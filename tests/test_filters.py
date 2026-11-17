@@ -300,3 +300,16 @@ def test_iso_week():
     assert _filter_iso_week("2027-01-01") == "2026-W53"
     assert _filter_iso_week("2026-11-09", fmt="W{week}") == "W46"
     assert _filter_iso_week("not-a-date") == "not-a-date"
+
+
+def test_add_days():
+    from datetime import date
+
+    from dci_report_gen.renderers.jinja import _filter_add_days
+
+    assert _filter_add_days("2026-11-12") == "2026-11-12"
+    assert _filter_add_days("2026-11-12", 7) == "2026-11-19"
+    assert _filter_add_days("2026-11-12T00:00:00.000Z", 7, "%d/%m") == "19/11"
+    assert _filter_add_days("2026-12-31", 1, "%a %d %b %Y") == "Fri 01 Jan 2027"
+    assert _filter_add_days(date(2026, 11, 19), -7) == "2026-11-12"
+    assert _filter_add_days("not-a-date", 3) == "not-a-date"

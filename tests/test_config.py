@@ -128,6 +128,44 @@ class TestResolveDateExpr:
         mock_date.today.return_value = date(2026, 9, 13)  # Sunday
         assert _resolve_date_expr("{monday}") == "2026-09-07"
 
+    @patch("dci_report_gen.config.date")
+    def test_thursday_anchor(self, mock_date):
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        mock_date.today.return_value = date(2026, 11, 19)  # Thursday
+        assert _resolve_date_expr("{thursday}") == "2026-11-19"
+        assert _resolve_date_expr("{thursday-7d}") == "2026-11-12"
+        assert _resolve_date_expr("{thursday-91d}") == "2026-08-20"
+        mock_date.today.return_value = date(2026, 11, 18)  # Wednesday
+        assert _resolve_date_expr("{thursday}") == "2026-11-12"
+        mock_date.today.return_value = date(2026, 11, 20)  # Friday
+        assert _resolve_date_expr("{thursday}") == "2026-11-19"
+
+    @patch("dci_report_gen.config.date")
+    def test_all_weekdays(self, mock_date):
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        mock_date.today.return_value = date(2026, 11, 17)  # Tuesday
+        expected = {
+            "monday": "2026-11-16",
+            "tuesday": "2026-11-17",
+            "wednesday": "2026-11-11",
+            "thursday": "2026-11-12",
+            "friday": "2026-11-13",
+            "saturday": "2026-11-14",
+            "sunday": "2026-11-15",
+        }
+        for name, value in expected.items():
+            assert _resolve_date_expr("{" + name + "}") == value
+
+    @patch("dci_report_gen.config.date")
+    def test_weekday_from_var(self, mock_date):
+        # "{{{anchor}}-7d}" -> "{thursday-7d}" -> date (as in partner-snapshot.yaml)
+        from dci_report_gen.config import _resolve_vars
+
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        mock_date.today.return_value = date(2026, 11, 19)
+        out = _resolve_vars({"anchor": "thursday", "week_start": "{{{anchor}}-7d}"})
+        assert out["week_start"] == "2026-11-12"
+
     def test_no_expression(self):
         assert _resolve_date_expr("plain text") == "plain text"
         assert _resolve_date_expr("2026-01-01") == "2026-01-01"
