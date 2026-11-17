@@ -64,25 +64,39 @@ class ReportConfig:
     context: dict = field(default_factory=dict)
 
 
+WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
+_DATE_EXPR_RE = re.compile(r"\{(today|" + "|".join(WEEKDAYS) + r")(?:([+-])(\d+)d)?\}")
+
+
 def _resolve_date_expr(text: str) -> str:
     """Resolve date expressions relative to a base date.
 
-    Bases: ``today`` and ``monday`` (Monday of the current ISO week, i.e.
-    today when run on a Monday). Each accepts an optional day offset:
-    ``{today}``, ``{today-Nd}``, ``{today+Nd}``, ``{monday}``,
-    ``{monday-Nd}``, ``{monday+Nd}``.
+    Bases: ``today`` and a weekday name (``monday`` … ``sunday``), which
+    resolves to the most recent such day, today included: ``{monday}`` is
+    the Monday of the current ISO week, ``{thursday}`` is today when run on
+    a Thursday and the previous Thursday otherwise. Each base accepts an
+    optional day offset: ``{today-Nd}``, ``{thursday+Nd}``, …
     """
 
     def replacer(match: re.Match) -> str:
         base_name, sign, days = match.group(1), match.group(2), match.group(3)
         base = date.today()
-        if base_name == "monday":
-            base -= timedelta(days=base.weekday())
+        if base_name in WEEKDAYS:
+            base -= timedelta(days=(base.weekday() - WEEKDAYS.index(base_name)) % 7)
         if sign:
             base += timedelta(days=(1 if sign == "+" else -1) * int(days))
         return base.isoformat()
 
-    return re.sub(r"\{(today|monday)(?:([+-])(\d+)d)?\}", replacer, text)
+    return _DATE_EXPR_RE.sub(replacer, text)
 
 
 def _substitute_vars_expr(text: str, vars: dict[str, str]) -> str:
@@ -126,7 +140,7 @@ def _resolve_vars(vars: dict[str, str]) -> dict[str, str]:
     Processing order:
     1. Collect literal vars (no {{}} references)
     2. Resolve {{var}} and {{var*N}} references using literals
-    3. Resolve {today|monday}[+-Nd] date expressions
+    3. Resolve {today|<weekday>}[+-Nd] date expressions
     """
     str_vars = {k: str(v) for k, v in vars.items()}
 
