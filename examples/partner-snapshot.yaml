@@ -11,14 +11,26 @@ description: "DCI Partner Snapshot — one-page weekly activity summary for a pa
 #   journal_url  Optional link to the partner activity journal
 #   min_jobs     Below this number of finished jobs, success rates and
 #                volume variations are flagged as "low volume" (default 5)
+#   anchor       Weekday the reporting weeks start and end on (default monday)
+#   week_offset  Elasticsearch offset aligning the weekly buckets on `anchor`
+#                (must match it, see the table below; default +4d = monday)
 #
-# Windows (all dates UTC, end bound excluded):
-#   week   = [week_start, date_end)  → last complete ISO week (Mon → Sun)
-#   trend  = [trend_start, date_end) → 13 ISO weeks = 12-week baseline + reporting week
+# Windows (all dates UTC at 00:00, end bound excluded):
+#   week   = [week_start, date_end)  → last complete 7-day week ending on `anchor`
+#   trend  = [trend_start, date_end) → 13 weeks = 12-week baseline + reporting week
 #
-# Defaults are anchored on the Monday of the current ISO week, so the report
-# always covers the last complete week whatever the day it runs. To report on
-# another week, pass the three dates explicitly, e.g.:
+# Defaults are anchored on the most recent `anchor` day (today included), so
+# the report always covers the last complete week whatever the day it runs.
+# Default monday = last complete ISO week (Mon → Sun). For Thursday → Thursday
+# weeks (e.g. a review meeting on Thursday afternoon):
+#   --var anchor=thursday --var week_offset=0d
+#
+# Weekly buckets are 7-day fixed intervals counted from 1970-01-01 (a Thursday),
+# shifted by week_offset:
+#   monday +4d · tuesday +5d · wednesday +6d · thursday 0d · friday +1d ·
+#   saturday +2d · sunday +3d
+#
+# To report on another week, pass the three dates explicitly, e.g.:
 #   --var date_end=2026-11-16 --var week_start=2026-11-09 --var trend_start=2026-08-17
 #
 # Weather (job success rate of the reporting week):
@@ -35,9 +47,11 @@ vars:
   partner: "{{team}}"
   journal_url: ""
   min_jobs: "5"
-  date_end: "{monday}"
-  week_start: "{monday-7d}"
-  trend_start: "{monday-91d}"
+  anchor: "monday"
+  week_offset: "+4d"
+  date_end: "{{{anchor}}}"
+  week_start: "{{{anchor}}-7d}"
+  trend_start: "{{{anchor}}-91d}"
 
 report:
   title: "DCI Partner Snapshot"
@@ -171,7 +185,8 @@ data:
       weeks:
         date_histogram:
           field: "created_at"
-          calendar_interval: "week"
+          fixed_interval: "7d"
+          offset: "{{week_offset}}"
           min_doc_count: 0
           extended_bounds: {min: "{{trend_start}}", max: "{{week_start}}"}
         aggs:
