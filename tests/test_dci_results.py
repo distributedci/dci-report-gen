@@ -64,6 +64,9 @@ def test_include_results_returns_raw_sources(mock_ctx, mock_dci_job):
     fields_str = call_kwargs.kwargs.get("fields", "") or call_kwargs[1].get("fields", "")
     assert "tests" in fields_str
     assert "results" in fields_str
+    # The server only filters _source with "includes" ("fields" is ignored).
+    includes_str = call_kwargs.kwargs.get("includes", "")
+    assert includes_str == fields_str
 
 
 @patch("dci_report_gen.fetchers.dci.dci_job")
