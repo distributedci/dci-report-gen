@@ -41,6 +41,18 @@ def _flatten_row(hit: dict, fields: list[str] | None) -> dict:
     return hit
 
 
+def _projection_params(fields: list[str]) -> dict:
+    """Source-filtering params for /analytics/jobs.
+
+    The server now honours ``includes`` and silently ignores ``fields``,
+    returning full job documents (~750 KB each because of ``nodes`` and
+    ``jobstates``), which OOM-kills small CI runners. Send both so that
+    older servers (``fields``) and current ones (``includes``) work.
+    """
+    joined = ",".join(fields)
+    return {"includes": joined, "fields": joined}
+
+
 # DCI server caps a single search page at 200 results.
 DCI_MAX_PAGE_SIZE = 200
 
@@ -109,7 +121,7 @@ class DCIFetcher:
 
         params = {"query": source.query, "sort": source.sort}
         if fields:
-            params["fields"] = ",".join(fields)
+            params.update(_projection_params(fields))
 
         if source.aggs:
             # DCI server requires the aggregation wrapped under {"aggs": ...}
@@ -185,7 +197,7 @@ class DCIFetcher:
             {
                 "query": source.query,
                 "sort": source.sort,
-                "fields": "id,remoteci.name,created_at,files.name",
+                **_projection_params(["id", "remoteci.name", "created_at", "files.name"]),
             },
             max_results=sys.maxsize,
         )
