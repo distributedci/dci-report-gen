@@ -19,16 +19,18 @@ def _resolve_key_placeholders(
     text: str, fetched: dict[str, list], project: str
 ) -> tuple[str, bool, int]:
     """Replace `{{keys:<source>}}` with the comma-separated PROJECT-N ticket keys
-    found anywhere in that source's already-fetched results.
+    found anywhere in that source's already-fetched results. Without a project,
+    any Jira-style key (e.g. OCPBUGS-123, RHEL-45) is collected.
 
     Returns (new_text, had_placeholder, key_count).
     """
     counts: list[int] = []
-    pat = re.compile(rf"\b{re.escape(project)}-\d+\b") if project else None
+    prefix = re.escape(project) if project else r"[A-Z][A-Z0-9]+"
+    pat = re.compile(rf"\b{prefix}-\d+\b")
 
     def repl(match: re.Match) -> str:
         result = fetched.get(match.group(1), [])
-        keys = sorted(set(pat.findall(json.dumps(result)))) if pat else []
+        keys = sorted(set(pat.findall(json.dumps(result))))
         counts.append(len(keys))
         return ", ".join(keys)
 

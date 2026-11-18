@@ -1,0 +1,120 @@
+report:
+  title: "Closed Tickets Still Referenced in DCI"
+  date: auto
+  layout: closed-tickets-in-dci.md.j2
+
+vars:
+  # Closed Jira tickets still referenced by DCI jobs during the period, either
+  # as a workaround tag or as a testcase <property name="ticket"> value.
+  #
+  # Defaults to the last 30 days. Override on the CLI, e.g.:
+  #   --var lookback_days=7
+  #   --var date_start=2026-10-01 --var date_end=2026-10-31
+  lookback_days: "30"
+  date_start: "{today-{{lookback_days}}d}"
+  date_end: "{today}"
+
+data:
+  # Jobs that applied at least one workaround (keys_values "workarounds" >= 1).
+  # The workaround's Jira ticket is attached to the job as a tag (e.g.
+  # SUPPORTEX-25892); the terms "include" regex keeps only Jira-key tags.
+  workarounds:
+    type: dci
+    query: "(((keys_values.key='workarounds') and (keys_values.value>0)) and ((created_at>='{{date_start}}') and (created_at<='{{date_end}}T23:59:59')))"
+    limit: 1
+    fields: ["id"]
+    aggs_raw: true
+    aggs:
+      by_ticket:
+        terms:
+          field: tags
+          include: "[A-Z][A-Z0-9]+-[0-9]+"
+          size: 500
+        aggs:
+          last_seen:
+            max:
+              field: created_at
+          labs:
+            nested:
+              path: remoteci
+            aggs:
+              names:
+                terms:
+                  field: remoteci.name
+                  size: 20
+
+  # Testcases carrying a JUnit <property name="ticket" value="PROJ-N"/>.
+  # reverse_nested climbs back to the testcase (names, actions) and to the job
+  # (doc_count = jobs, last_seen, labs).
+  test_tickets:
+    type: dci
+    query: "((tests.testsuites.testcases.properties.name='ticket') and ((created_at>='{{date_start}}') and (created_at<='{{date_end}}T23:59:59')))"
+    limit: 1
+    fields: ["id"]
+    aggs_raw: true
+    aggs:
+      tests:
+        nested:
+          path: tests
+        aggs:
+          suites:
+            nested:
+              path: tests.testsuites
+            aggs:
+              cases:
+                nested:
+                  path: tests.testsuites.testcases
+                aggs:
+                  props:
+                    nested:
+                      path: tests.testsuites.testcases.properties
+                    aggs:
+                      ticket:
+                        filter:
+                          term:
+                            tests.testsuites.testcases.properties.name: ticket
+                        aggs:
+                          by_ticket:
+                            terms:
+                              field: tests.testsuites.testcases.properties.value
+                              size: 500
+                            aggs:
+                              testcase:
+                                reverse_nested:
+                                  path: tests.testsuites.testcases
+                                aggs:
+                                  names:
+                                    terms:
+                                      field: tests.testsuites.testcases.name
+                                      size: 10
+                                  actions:
+                                    terms:
+                                      field: tests.testsuites.testcases.action
+                              job:
+                                reverse_nested: {}
+                                aggs:
+                                  last_seen:
+                                    max:
+                                      field: created_at
+                                  labs:
+                                    nested:
+                                      path: remoteci
+                                    aggs:
+                                      names:
+                                        terms:
+                                          field: remoteci.name
+                                          size: 20
+
+  # Jira lookups restricted to closed tickets. {{keys:<source>}} expands to the
+  # Jira keys found in that source's results (any project).
+  closed_workaround_tickets:
+    type: jira
+    jql: "key in ({{keys:workarounds}}) AND statusCategory = Done"
+    max_results: 500
+    fields: ["key", "summary", "status", "resolution", "resolutiondate", "assignee"]
+
+  closed_test_tickets:
+    type: jira
+    jql: "key in ({{keys:test_tickets}}) AND statusCategory = Done"
+    max_results: 500
+    fields: ["key", "summary", "status", "resolution", "resolutiondate", "assignee"]
