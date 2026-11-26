@@ -1,270 +1,217 @@
+"""Tests for the Jira fetcher, including rate-limit retry handling."""
+from __future__ import annotations
+
+import os
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from dci_report_gen.config import SourceConfig
 from dci_report_gen.fetchers.jira import (
+    _REQUEST_TIMEOUT,
+    _RETRY_STATUS,
     JiraFetcher,
-    _extract_field,
-    _extract_option,
-    _rest_field_id,
+    _TimeoutHTTPAdapter,
 )
 
-
-def _mock_response(payload):
-    resp = MagicMock()
-    resp.json.return_value = payload
-    resp.raise_for_status.return_value = None
-    return resp
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-def _issue(**fields):
-    key = fields.pop("key", "PROJ-1")
-    return {"key": key, "fields": fields}
+def _make_source(**kwargs) -> SourceConfig:
+    defaults = {
+        "type": "jira",
+        "jql": "project = TEST ORDER BY updated DESC",
+        "max_results": 10,
+        "fields": ["key", "summary", "status", "assignee"],
+    }
+    defaults.update(kwargs)
+    return SourceConfig(**defaults)
 
 
-# --- _rest_field_id -------------------------------------------------------
+def _make_mock_issue(key="TEST-1", summary="Test issue", status="Open", assignee="alice"):
+    issue = MagicMock()
+    issue.key = key
+    issue.fields.summary = summary
+    issue.fields.status.__str__ = lambda s: status
+    issue.fields.assignee.__str__ = lambda s: assignee
+    return issue
 
 
-def test_rest_field_id_maps_report_names():
-    assert _rest_field_id("issue_type") == "issuetype"
-    assert _rest_field_id("fix_versions") == "fixVersions"
-    assert _rest_field_id("parent_summary") == "parent"
+# ---------------------------------------------------------------------------
+# Test 1: normal fetch returns expected rows
+# ---------------------------------------------------------------------------
 
 
-def test_rest_field_id_resolves_custom_field_alias():
-    assert _rest_field_id("severity") == "customfield_10840"
-    assert _rest_field_id("story_points") == "customfield_10028"
-
-
-def test_rest_field_id_passes_through_unknown_name():
-    assert _rest_field_id("customfield_99999") == "customfield_99999"
-
-
-# --- _extract_option ------------------------------------------------------
-
-
-def test_extract_option_none_returns_empty():
-    assert _extract_option(None) == ""
-
-
-def test_extract_option_dict_prefers_value_then_name():
-    assert _extract_option({"value": "High", "name": "ignored"}) == "High"
-    assert _extract_option({"name": "In Progress"}) == "In Progress"
-    assert _extract_option({"displayName": "Jane Doe"}) == "Jane Doe"
-
-
-def test_extract_option_dict_without_known_keys_returns_empty():
-    assert _extract_option({"id": "10001"}) == ""
-
-
-def test_extract_option_list_joins_items():
-    value = [{"value": "a"}, {"name": "b"}, "c"]
-    assert _extract_option(value) == "a, b, c"
-
-
-def test_extract_option_scalar_stringified():
-    assert _extract_option(5) == "5"
-
-
-# --- _extract_field -------------------------------------------------------
-
-
-def test_extract_field_key_and_summary():
-    issue = _issue(key="PROJ-42", summary="Fix the thing")
-    assert _extract_field(issue, "key") == "PROJ-42"
-    assert _extract_field(issue, "summary") == "Fix the thing"
-
-
-def test_extract_field_option_fields():
-    issue = _issue(
-        status={"name": "Done"},
-        assignee={"displayName": "Jane Doe"},
-        priority={"name": "High"},
-        issuetype={"name": "Bug"},
-    )
-    assert _extract_field(issue, "status") == "Done"
-    assert _extract_field(issue, "assignee") == "Jane Doe"
-    assert _extract_field(issue, "priority") == "High"
-    assert _extract_field(issue, "issue_type") == "Bug"
-
-
-def test_extract_field_missing_assignee_returns_empty():
-    issue = _issue(assignee=None)
-    assert _extract_field(issue, "assignee") == ""
-
-
-def test_extract_field_labels_and_lists():
-    issue = _issue(
-        labels=["telco", "ci"],
-        components=[{"name": "networking"}, {"name": "storage"}],
-        fixVersions=[{"name": "4.20"}],
-    )
-    assert _extract_field(issue, "labels") == "telco, ci"
-    assert _extract_field(issue, "components") == "networking, storage"
-    assert _extract_field(issue, "fix_versions") == "4.20"
-
-
-def test_extract_field_empty_lists_return_empty_string():
-    issue = _issue(labels=[], components=[], fixVersions=[])
-    assert _extract_field(issue, "labels") == ""
-    assert _extract_field(issue, "components") == ""
-    assert _extract_field(issue, "fix_versions") == ""
-
-
-def test_extract_field_parent_and_parent_summary():
-    issue = _issue(
-        parent={"key": "PROJ-1", "fields": {"summary": "Epic title"}},
-    )
-    assert _extract_field(issue, "parent") == "PROJ-1"
-    assert _extract_field(issue, "parent_summary") == "Epic title"
-
-
-def test_extract_field_missing_parent_returns_empty():
-    issue = _issue()
-    assert _extract_field(issue, "parent") == ""
-    assert _extract_field(issue, "parent_summary") == ""
-
-
-def test_extract_field_custom_field_alias():
-    issue = _issue(customfield_10840={"value": "Critical"})
-    assert _extract_field(issue, "severity") == "Critical"
-
-
-def test_extract_field_unknown_field_returns_empty():
-    issue = _issue()
-    assert _extract_field(issue, "does_not_exist") == ""
-
-
-# --- JiraFetcher.fetch ----------------------------------------------------
-
-
-def test_fetch_no_jql_returns_empty():
+def test_fetch_returns_rows():
+    """fetch() should return one dict per issue with the requested fields."""
     fetcher = JiraFetcher()
-    assert fetcher.fetch(SourceConfig(type="jira")) == []
+    source = _make_source()
+
+    mock_issue = _make_mock_issue()
+
+    with patch("dci_report_gen.fetchers.jira.JIRA") as MockJIRA:
+        mock_client = MagicMock()
+        MockJIRA.return_value = mock_client
+        mock_client.search_issues.return_value = [mock_issue]
+        # Provide a real-ish _session so mount() calls don't blow up
+        mock_client._session = MagicMock()
+
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok", "JIRA_EMAIL": "user@example.com"}):
+            rows = fetcher.fetch(source)
+
+    assert len(rows) == 1
+    assert rows[0]["key"] == "TEST-1"
+    assert rows[0]["summary"] == "Test issue"
 
 
-@patch.dict("os.environ", {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"})
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_maps_fields_to_rows(mock_requests):
-    payload = {
-        "issues": [
-            _issue(key="PROJ-1", summary="First", status={"name": "Open"}),
-            _issue(key="PROJ-2", summary="Second", status={"name": "Done"}),
-        ],
-        "isLast": True,
-    }
-    mock_requests.post.return_value = _mock_response(payload)
-
-    source = SourceConfig(type="jira", jql="project = PROJ", fields=["key", "summary", "status"])
-    rows = JiraFetcher().fetch(source)
-
-    assert rows == [
-        {"key": "PROJ-1", "summary": "First", "status": "Open"},
-        {"key": "PROJ-2", "summary": "Second", "status": "Done"},
-    ]
+# ---------------------------------------------------------------------------
+# Test 2: empty JQL returns empty list without touching JIRA
+# ---------------------------------------------------------------------------
 
 
-@patch.dict("os.environ", {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"})
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_requests_resolved_rest_fields(mock_requests):
-    mock_requests.post.return_value = _mock_response({"issues": [], "isLast": True})
+def test_fetch_empty_jql_returns_empty():
+    """fetch() must short-circuit and return [] when jql is falsy."""
+    fetcher = JiraFetcher()
+    source = _make_source(jql="")
 
-    source = SourceConfig(type="jira", jql="x", fields=["key", "issue_type", "severity"])
-    JiraFetcher().fetch(source)
+    with patch("dci_report_gen.fetchers.jira.JIRA") as MockJIRA:
+        result = fetcher.fetch(source)
+        MockJIRA.assert_not_called()
 
-    body = mock_requests.post.call_args.kwargs["json"]
-    assert body["jql"] == "x"
-    assert set(body["fields"]) == {"key", "issuetype", "customfield_10840"}
+    assert result == []
 
 
-@patch.dict("os.environ", {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"})
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_uses_default_fields_when_unset(mock_requests):
-    mock_requests.post.return_value = _mock_response(
-        {"issues": [_issue(key="PROJ-1")], "isLast": True}
+# ---------------------------------------------------------------------------
+# Test 3: adapter is configured with correct retry settings
+# ---------------------------------------------------------------------------
+
+
+def test_retry_adapter_configured():
+    """_get_client() must mount a _TimeoutHTTPAdapter with correct retry settings."""
+    fetcher = JiraFetcher()
+
+    with patch("dci_report_gen.fetchers.jira.JIRA") as MockJIRA:
+        mock_client = MagicMock()
+        MockJIRA.return_value = mock_client
+        mock_session = MagicMock()
+        mock_client._session = mock_session
+
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}):
+            fetcher._get_client()
+
+    # mount() should have been called at least for https:// and http://
+    mount_calls = mock_session.mount.call_args_list
+    schemes = [c[0][0] for c in mount_calls]
+    assert "https://" in schemes
+    assert "http://" in schemes
+
+    # Grab the adapter used for https://
+    https_adapter = next(c[0][1] for c in mount_calls if c[0][0] == "https://")
+
+    assert isinstance(https_adapter, _TimeoutHTTPAdapter)
+    assert https_adapter._timeout == _REQUEST_TIMEOUT
+
+    retry = https_adapter.max_retries
+    assert retry.respect_retry_after_header is True
+    assert set(retry.status_forcelist) == _RETRY_STATUS
+
+
+# ---------------------------------------------------------------------------
+# Test 4: adapter retries on 429 then succeeds on 200
+# ---------------------------------------------------------------------------
+
+
+def test_adapter_retries_on_429_then_succeeds():
+    """A real session with the adapter should retry once after a 429 response."""
+    from urllib3.response import HTTPResponse as Urllib3Response
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=2,
+        backoff_factor=0,
+        status_forcelist=[429],
+        respect_retry_after_header=False,
+        raise_on_status=False,
     )
+    adapter = _TimeoutHTTPAdapter(timeout=5, max_retries=retry)
+    session = requests.Session()
+    session.mount("http://", adapter)
 
-    rows = JiraFetcher().fetch(SourceConfig(type="jira", jql="x"))
+    call_count = 0
 
-    body = mock_requests.post.call_args.kwargs["json"]
-    assert set(body["fields"]) == {"key", "summary", "status", "assignee"}
-    assert set(rows[0]) == {"key", "summary", "status", "assignee"}
+    def fake_make_request(self, conn, method, url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        status = 429 if call_count == 1 else 200
+        body = BytesIO(b"")
+        resp = Urllib3Response(status=status, body=body, headers={}, preload_content=False)
+        return resp
+
+    with patch("urllib3.connectionpool.HTTPConnectionPool._make_request", fake_make_request):
+        resp = session.get("http://test.example.com/issues")
+
+    assert resp.status_code == 200
+    assert call_count == 2
 
 
-@patch.dict("os.environ", {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"})
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_paginates_with_next_token(mock_requests):
-    page1 = {
-        "issues": [_issue(key=f"PROJ-{i}") for i in range(100)],
-        "nextPageToken": "tok2",
-        "isLast": False,
+# ---------------------------------------------------------------------------
+# Test 5: RetryError surfaces as RuntimeError with clear message
+# ---------------------------------------------------------------------------
+
+
+def test_retry_exhausted_surfaces_clear_error():
+    """fetch() must convert RetryError to a RuntimeError describing retries."""
+    fetcher = JiraFetcher()
+    source = _make_source()
+
+    with patch("dci_report_gen.fetchers.jira.JIRA") as MockJIRA:
+        mock_client = MagicMock()
+        MockJIRA.return_value = mock_client
+        mock_client._session = MagicMock()
+        mock_client.search_issues.side_effect = requests.exceptions.RetryError("exhausted")
+
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}), pytest.raises(RuntimeError, match="after retries"):
+            fetcher.fetch(source)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Timeout surfaces as RuntimeError with clear message
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_surfaces_clear_error():
+    """fetch() must convert Timeout to a RuntimeError describing a timeout."""
+    fetcher = JiraFetcher()
+    source = _make_source()
+
+    with patch("dci_report_gen.fetchers.jira.JIRA") as MockJIRA:
+        mock_client = MagicMock()
+        MockJIRA.return_value = mock_client
+        mock_client._session = MagicMock()
+        mock_client.search_issues.side_effect = requests.exceptions.Timeout("too slow")
+
+        with patch.dict(os.environ, {"JIRA_TOKEN": "tok"}), pytest.raises(RuntimeError, match="timed out"):
+            fetcher.fetch(source)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: missing token raises RuntimeError mentioning JIRA_TOKEN
+# ---------------------------------------------------------------------------
+
+
+def test_missing_token_raises():
+    """_get_client() must raise RuntimeError when no token env var is set."""
+    fetcher = JiraFetcher()
+
+    env_without_token = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("JIRA_TOKEN", "JIRA_API_TOKEN")
     }
-    page2 = {
-        "issues": [_issue(key="PROJ-100")],
-        "isLast": True,
-    }
-    mock_requests.post.side_effect = [_mock_response(page1), _mock_response(page2)]
 
-    source = SourceConfig(type="jira", jql="x", fields=["key"], max_results=150)
-    rows = JiraFetcher().fetch(source)
-
-    assert len(rows) == 101
-    assert mock_requests.post.call_count == 2
-    second_body = mock_requests.post.call_args_list[1].kwargs["json"]
-    assert second_body["nextPageToken"] == "tok2"
-
-
-@patch.dict("os.environ", {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok"})
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_stops_at_max_results(mock_requests):
-    mock_requests.post.return_value = _mock_response(
-        {"issues": [_issue(key=f"PROJ-{i}") for i in range(10)], "isLast": True}
-    )
-
-    source = SourceConfig(type="jira", jql="x", fields=["key"], max_results=10)
-    JiraFetcher().fetch(source)
-
-    body = mock_requests.post.call_args.kwargs["json"]
-    assert body["maxResults"] == 10
-
-
-@patch.dict(
-    "os.environ",
-    {"JIRA_URL": "https://jira.example.com", "JIRA_TOKEN": "tok", "JIRA_EMAIL": "me@example.com"},
-)
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_cloud_uses_basic_auth(mock_requests):
-    mock_requests.post.return_value = _mock_response({"issues": [], "isLast": True})
-
-    JiraFetcher().fetch(SourceConfig(type="jira", jql="x"))
-
-    kwargs = mock_requests.post.call_args.kwargs
-    assert kwargs["auth"] == ("me@example.com", "tok")
-    assert "Authorization" not in kwargs["headers"]
-
-
-@patch.dict(
-    "os.environ",
-    {"JIRA_URL": "https://jira.example.com/", "JIRA_TOKEN": "tok", "JIRA_EMAIL": ""},
-)
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_server_uses_bearer_auth(mock_requests):
-    mock_requests.post.return_value = _mock_response({"issues": [], "isLast": True})
-
-    JiraFetcher().fetch(SourceConfig(type="jira", jql="x"))
-
-    kwargs = mock_requests.post.call_args.kwargs
-    assert "auth" not in kwargs
-    assert kwargs["headers"]["Authorization"] == "Bearer tok"
-    # trailing slash stripped from the endpoint
-    assert mock_requests.post.call_args.args[0] == (
-        "https://jira.example.com/rest/api/3/search/jql"
-    )
-
-
-@patch.dict("os.environ", {}, clear=True)
-@patch("dci_report_gen.fetchers.jira.requests")
-def test_fetch_missing_token_raises(mock_requests):
-    with pytest.raises(RuntimeError, match="JIRA_TOKEN"):
-        JiraFetcher().fetch(SourceConfig(type="jira", jql="x"))
+    with patch.dict(os.environ, env_without_token, clear=True), pytest.raises(RuntimeError, match="JIRA_TOKEN"):
+        fetcher._get_client()
