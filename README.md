@@ -82,6 +82,9 @@ JIRA_EMAIL=<your-email>          # required for Atlassian Cloud (uses basic_auth
 # GitHub (required for GitHub data)
 GITHUB_TOKEN=<your-github-token>
 
+# Google Sheets (required for google_sheet data; pip install 'dci-report-gen[sheets]')
+GOOGLE_SHEETS_CREDENTIALS=/path/to/service-account.json   # or the JSON key itself
+
 # macOS only — WeasyPrint PDF support
 DYLD_LIBRARY_PATH=/opt/homebrew/lib
 ```
@@ -174,6 +177,18 @@ For each PR, the fetcher searches Jira for tickets referencing the PR URL (in de
 For each sampled date `D`, a ticket counts as **open** when it was created on or before `D` and not yet resolved by `D` (`created <= D AND (resolutiondate is EMPTY OR resolutiondate > D)`). It additionally counts as **active** when it is assigned (`assignee is not EMPTY`) — a count-based approximation using the *current* assignee state. The **ratio** is `active / open`, i.e. the share of the open backlog being worked on. Alongside these point-in-time **stock** counts, each row also carries the per-period **flow** counts over the interval since the previous sample: **created** (`created > prev AND created <= D`) and **closed** (`resolutiondate > prev AND resolutiondate <= D`); both are `0` for the first sample. The stock-flow identity holds: `open[i] - open[i-1] == created[i] - closed[i]`. Counts use Jira's lightweight `approximate-count` endpoint (no issue payloads), so the fetcher is cheap even over long ranges. Returns a list of dicts `{"date": "YYYY-MM-DD", "open": <int>, "active": <int>, "ratio": <float>, "created": <int>, "closed": <int>}` sorted ascending by date. Pair it with the `trend_chart_svg` Jinja filter to render inline SVG line charts (see `examples/jira-backlog-trend.md.j2`), overlaying multiple series — e.g. open vs active for the stock, and created vs closed for the flow.
 
 Scope is purely driven by `base_jql`, so the same config serves any project, team label, or issue type. For a **bug-only** backlog & flow, override `base_jql` with `AND issuetype = Bug` (and set `scope=Bugs` for the header) — no separate config needed.
+
+**Google Sheet** (`type: google_sheet`) — reads cells from a spreadsheet with a service account (needs the `sheets` extra and `GOOGLE_SHEETS_CREDENTIALS`; share the sheet with the service account email):
+
+| Field                  | Description                                                        | Default             |
+|------------------------|--------------------------------------------------------------------|---------------------|
+| `params.spreadsheet_id`| Spreadsheet ID (from its URL)                                      | required            |
+| `params.ranges`        | List of A1 ranges, e.g. `["'Summary'!C26", "Data!A1:D20"]`         | required            |
+| `params.header`        | Read each range as a table: first row = column names               | `false`             |
+| `params.allow_empty`   | Accept ranges without any value (otherwise the report fails)       | `false`             |
+| `params.value_render`  | `UNFORMATTED_VALUE`, `FORMATTED_VALUE` or `FORMULA`                | `UNFORMATTED_VALUE` |
+
+By default it returns one row per range, in request order: `{"range", "resolved_range", "value" (top-left cell), "values" (list of rows)}`, so a template can use `{{ pass_rate[0].value }}`. With `header: true`, each table row becomes a dict keyed by the header cells, plus `_range`. Unformatted values keep numbers as numbers (a cell showing `74.6%` returns `0.746`). HTTP errors (403 sheet not shared, 404 wrong ID, 400 bad range) and empty ranges fail the report with an explicit message instead of rendering blank values.
 
 ### Variables
 
