@@ -20,6 +20,9 @@ dependencies = [
 dci-report-gen = "dci_report_gen.cli:main"
 
 [project.optional-dependencies]
+sheets = [
+    "google-auth>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",

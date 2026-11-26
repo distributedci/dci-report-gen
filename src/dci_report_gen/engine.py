@@ -72,6 +72,10 @@ class ReportEngine:
                 )
 
                 self._fetchers[source_type] = MarkdownTableFetcher()
+            elif source_type == "google_sheet":
+                from dci_report_gen.fetchers.google_sheet import GoogleSheetFetcher
+
+                self._fetchers[source_type] = GoogleSheetFetcher()
             else:
                 raise ValueError(f"Unknown source type: {source_type}")
         return self._fetchers[source_type]
