@@ -15,13 +15,16 @@ Default mode returns one row per requested range, in request order:
   - ``range``: the range as written in the config
   - ``resolved_range``: the range as normalized by the API (e.g. Summary!C26)
   - ``value``: top-left cell value, or None
-  - ``values``: all cells as a list of rows (trailing empty cells are omitted
-    by the API)
+  - ``cells``: all cells as a list of rows (trailing empty cells are omitted
+    by the API). Not named ``values``: in Jinja ``row.values`` would resolve
+    to the ``dict.values`` method instead of the data.
 
-With ``header: true`` each range is read as a table: the first row gives the
-column names and every following row becomes a dict, plus ``_range``.
+With ``header: true`` each range is read as a table: the first non-blank row
+gives the column names (empty header cells become ``colN``), blank rows are
+skipped and every other row becomes a dict, plus ``_range``.
 
-Values are unformatted (numbers stay numbers: 74.6% is returned as 0.746).
+Values are unformatted: numeric cells stay numbers (a number formatted as
+74.6% is returned as 0.746; a cell holding the text "74.6%" stays a string).
 Set ``params.value_render`` to ``FORMATTED_VALUE`` to get the displayed text.
 
 Credentials: ``GOOGLE_SHEETS_CREDENTIALS`` holds the path to a service
@@ -87,12 +90,19 @@ def _http_error(response, spreadsheet_id: str) -> RuntimeError:
     )
 
 
+def _is_blank(cells: list) -> bool:
+    return not any(str(c).strip() for c in cells if c is not None)
+
+
 def _table_rows(requested: str, values: list[list]) -> list[dict]:
-    if not values:
+    """Turn a range into dicts: first non-blank row = headers, blank rows skipped."""
+    non_blank = [cells for cells in values if not _is_blank(cells)]
+    if not non_blank:
         return []
-    headers = [str(h).strip() for h in values[0]]
+    # Empty header cells get a positional name so columns never collide.
+    headers = [str(h).strip() or f"col{i + 1}" for i, h in enumerate(non_blank[0])]
     rows = []
-    for cells in values[1:]:
+    for cells in non_blank[1:]:
         cells = list(cells) + [None] * (len(headers) - len(cells))
         row = dict(zip(headers, cells))
         row["_range"] = requested
@@ -162,7 +172,7 @@ class GoogleSheetFetcher:
                     "range": requested,
                     "resolved_range": value_range.get("range", requested),
                     "value": first,
-                    "values": values,
+                    "cells": values,
                 }
             )
         return rows

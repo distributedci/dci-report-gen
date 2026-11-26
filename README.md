@@ -244,7 +244,7 @@ Scope is purely driven by `base_jql`, so the same config serves any project, tea
 | `params.allow_empty`   | Accept ranges without any value (otherwise the report fails)       | `false`             |
 | `params.value_render`  | `UNFORMATTED_VALUE`, `FORMATTED_VALUE` or `FORMULA`                | `UNFORMATTED_VALUE` |
 
-By default it returns one row per range, in request order: `{"range", "resolved_range", "value" (top-left cell), "values" (list of rows)}`, so a template can use `{{ pass_rate[0].value }}`. With `header: true`, each table row becomes a dict keyed by the header cells, plus `_range`. Unformatted values keep numbers as numbers (a cell showing `74.6%` returns `0.746`). HTTP errors (403 sheet not shared, 404 wrong ID, 400 bad range) and empty ranges fail the report with an explicit message instead of rendering blank values.
+By default it returns one row per range, in request order: `{"range", "resolved_range", "value" (top-left cell), "cells" (list of rows)}`, so a template can use `{{ pass_rate[0].value }}` or `{{ pass_rate[0].cells[0][2] }}`. With `header: true`, the first non-blank row of each range gives the column names (empty header cells become `colN`), blank rows are skipped, and each other row becomes a dict keyed by the header cells, plus `_range`. Unformatted values keep numeric cells as numbers (a number formatted as `74.6%` returns `0.746`; a cell holding the text `74.6%` stays a string). HTTP errors (403 sheet not shared, 404 wrong ID, 400 bad range) and empty ranges fail the report with an explicit message instead of rendering blank values.
 
 ### Variables
 

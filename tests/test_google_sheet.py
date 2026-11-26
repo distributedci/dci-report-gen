@@ -58,13 +58,13 @@ def test_cells_in_request_order():
             "range": "'Summary'!C26",
             "resolved_range": "Summary!C26",
             "value": 0.746,
-            "values": [[0.746]],
+            "cells": [[0.746]],
         },
         {
             "range": "'Summary'!B26:C27",
             "resolved_range": "Summary!B26:C27",
             "value": "Pass rate",
-            "values": [["Pass rate", 0.7], ["Other"]],
+            "cells": [["Pass rate", 0.7], ["Other"]],
         },
     ]
     url, params = session.calls[0]
@@ -130,7 +130,60 @@ def test_empty_range_fails_unless_allowed():
     rows = GoogleSheetFetcher(FakeSession(FakeResponse(payload=payload))).fetch(
         source(ranges=["Summary!C26", "Summary!C99"], allow_empty=True)
     )
-    assert rows[1]["value"] is None and rows[1]["values"] == []
+    assert rows[1]["value"] is None and rows[1]["cells"] == []
+
+
+def test_header_mode_skips_blank_rows_and_names_empty_headers():
+    # Shape seen on a real sheet: blank first row, empty header cell, blank
+    # separator row inside the range.
+    session = FakeSession(
+        FakeResponse(
+            payload={
+                "valueRanges": [
+                    {
+                        "range": "Stats!A18:C22",
+                        "values": [
+                            [],
+                            ["LANES BY STATUS", "", "Percentage"],
+                            ["Completed", 88, "68.2%"],
+                            ["", ""],
+                            ["Blocked", 27, "20.9%"],
+                        ],
+                    },
+                ]
+            }
+        )
+    )
+    rows = GoogleSheetFetcher(session).fetch(
+        source(ranges=["Stats!A18:C22"], header=True)
+    )
+    assert rows == [
+        {
+            "LANES BY STATUS": "Completed",
+            "col2": 88,
+            "Percentage": "68.2%",
+            "_range": "Stats!A18:C22",
+        },
+        {
+            "LANES BY STATUS": "Blocked",
+            "col2": 27,
+            "Percentage": "20.9%",
+            "_range": "Stats!A18:C22",
+        },
+    ]
+
+
+def test_cells_key_is_usable_from_jinja():
+    # "values" would resolve to dict.values in Jinja attribute access.
+    from jinja2 import Template
+
+    payload = {"valueRanges": [{"range": "S!A1:B1", "values": [["Completed", 88]]}]}
+    rows = GoogleSheetFetcher(FakeSession(FakeResponse(payload=payload))).fetch(
+        source(ranges=["S!A1:B1"])
+    )
+    assert Template("{{ r.value }}={{ r.cells[0][1] }}").render(r=rows[0]) == (
+        "Completed=88"
+    )
 
 
 def test_http_403_explains_sharing():
