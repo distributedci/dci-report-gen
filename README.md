@@ -91,6 +91,62 @@ DYLD_LIBRARY_PATH=/opt/homebrew/lib
 
 Only the credentials for data sources used in your config are required.
 
+### Google Sheets service account setup
+
+The `google_sheet` source authenticates as a Google Cloud **service account** with the read-only scope `https://www.googleapis.com/auth/spreadsheets.readonly`. No user OAuth flow is involved, so it works unattended in CI. One-time setup (Cloud Console or `gcloud`):
+
+1. **Pick a Google Cloud project** you can administer, and enable the Google Sheets API on it:
+
+   ```bash
+   gcloud config set project <PROJECT_ID>
+   gcloud services enable sheets.googleapis.com
+   ```
+
+2. **Create the service account.** It needs **no IAM role** on the project: access is granted per spreadsheet (step 4).
+
+   ```bash
+   gcloud iam service-accounts create sheets-reader \
+     --display-name "dci-report-gen Google Sheets reader"
+   ```
+
+   Its email is `sheets-reader@<PROJECT_ID>.iam.gserviceaccount.com`.
+
+3. **Create a JSON key** and store it outside the repository:
+
+   ```bash
+   gcloud iam service-accounts keys create ~/.config/dci-report-gen/sheets-reader.json \
+     --iam-account sheets-reader@<PROJECT_ID>.iam.gserviceaccount.com
+   chmod 600 ~/.config/dci-report-gen/sheets-reader.json
+   ```
+
+   If this fails with `FAILED_PRECONDITION` / `Key creation is not allowed`, the organization policy `iam.disableServiceAccountKeyCreation` (or `iam.managed.disableServiceAccountKeyCreation`) is enforced on that project: use another project or ask its administrators.
+
+4. **Share each spreadsheet** with the service account email as **Viewer** (Share button in Google Sheets, untick "Notify people"). This is the only permission needed. Without it the API returns 403 and the report fails with an explicit message.
+
+5. **Expose the key** through `GOOGLE_SHEETS_CREDENTIALS`, either as a path or as the JSON content itself:
+
+   ```bash
+   # Local run
+   export GOOGLE_SHEETS_CREDENTIALS=~/.config/dci-report-gen/sheets-reader.json
+   uv run --extra sheets dci-report-gen my-config.yaml -o /tmp/report.md
+   ```
+
+   - **GitLab CI**: add a *File* type variable `GOOGLE_SHEETS_CREDENTIALS` (protected, not masked since JSON cannot be masked) with the key content; GitLab exposes it as a file path.
+   - **GitHub Actions**: store the key content in a repository secret and pass it as `GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}`.
+   - Install the optional dependency where the report runs: `pip install 'dci-report-gen[sheets]'`.
+
+Security notes: never commit the key (keep it out of the repo, `.env` is gitignored), use one service account per purpose, and rotate or delete keys you no longer need (`gcloud iam service-accounts keys list|delete --iam-account <SA_EMAIL>`).
+
+| Error message | Likely cause |
+|---------------|--------------|
+| `HTTP 403 ... The caller does not have permission` | Spreadsheet not shared with the service account (step 4) |
+| `HTTP 403 ... Google Sheets API has not been used in project ...` | Sheets API not enabled on the key's project (step 1) |
+| `HTTP 404` | Wrong `spreadsheet_id` |
+| `HTTP 400` | Malformed A1 range or unknown tab name |
+| `google_sheet: no value in ...` | Empty range (rows moved?); set `allow_empty: true` if expected |
+| `google_sheet source requires google-auth` | Missing optional dependency: install the `sheets` extra |
+| `google_sheet source requires GOOGLE_SHEETS_CREDENTIALS` | Variable not set in the environment / CI |
+
 ## Config file format
 
 A config file defines the report metadata, named data sources, variables, and a Jinja2 layout template.
@@ -178,7 +234,7 @@ For each sampled date `D`, a ticket counts as **open** when it was created on or
 
 Scope is purely driven by `base_jql`, so the same config serves any project, team label, or issue type. For a **bug-only** backlog & flow, override `base_jql` with `AND issuetype = Bug` (and set `scope=Bugs` for the header) — no separate config needed.
 
-**Google Sheet** (`type: google_sheet`) — reads cells from a spreadsheet with a service account (needs the `sheets` extra and `GOOGLE_SHEETS_CREDENTIALS`; share the sheet with the service account email):
+**Google Sheet** (`type: google_sheet`) — reads cells from a spreadsheet with a service account (needs the `sheets` extra and `GOOGLE_SHEETS_CREDENTIALS`; share the sheet with the service account email, see [Google Sheets service account setup](#google-sheets-service-account-setup)):
 
 | Field                  | Description                                                        | Default             |
 |------------------------|--------------------------------------------------------------------|---------------------|
